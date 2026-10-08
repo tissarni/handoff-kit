@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Fake glab: logs its argv. `mr create` stores a fixed URL and prints glab's summary block
+# (the URL indented on its last line); `api …merge_requests…` prints a JSON list holding
+# the stored MR, or `[]`; anything else exits 0.
+set -euo pipefail
+printf '%s\n' "$*" >>"$FAKE_STATE_DIR/glab.log"
+case "${1:-}:${2:-}" in
+  mr:create)
+    url="https://gitlab.com/test/repo/-/merge_requests/1"
+    printf '%s' "$url" >"$FAKE_STATE_DIR/glab-mr-url"
+    printf '\nCreating merge request for feat/test into main in test/repo\n\n!1 test (feat/test)\n %s\n\n' "$url"
+    ;;
+  api:*merge_requests*)
+    if [ -f "$FAKE_STATE_DIR/glab-mr-url" ]; then
+      printf '[{"iid":1,"web_url":"%s"}]\n' "$(cat "$FAKE_STATE_DIR/glab-mr-url")"
+    else
+      echo '[]'
+    fi
+    ;;
+esac
+exit 0

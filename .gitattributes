@@ -1,0 +1,7 @@
+# The kit is shell and python run on Linux. A CRLF checkout makes every script fail
+# ("bad interpreter: /usr/bin/env bash^M"), so force LF whatever the client's settings.
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+hooks/* text eol=lf
+tests/fakes/* text eol=lf

@@ -1,0 +1,150 @@
+# Session configuration for the handoff loop.
+#
+# Read by /handoff, which resolves the values and stamps them into each brief's
+# frontmatter. The brief is then the record of what a run was actually given — change
+# a brief's own frontmatter to override it for that brief only.
+#
+# Resolution order, first hit wins:
+#   1. what you say when invoking the skill  ("handoff my-backend, xhigh effort")
+#   2. the brief's own frontmatter           (a revised brief keeps what it was given)
+#   3. per-main override below
+#   4. defaults below
+#
+# Flag order matters in the launcher's argv: every flag, then `--`, then the prompt
+# LAST. --disallowedTools and --allowedTools are variadic and will otherwise swallow
+# the prompt as tool names. Lists must be comma-separated, not space-separated, for
+# the same reason.
+#
+# What these settings cost. Verified 2026-08-25 on the previous install, not
+# re-verified on this host: authentication was by OAuth — no ANTHROPIC_API_KEY, no
+# ANTHROPIC_AUTH_TOKEN, no Bedrock or Vertex, no redirected ANTHROPIC_BASE_URL — on a
+# work account carrying an organizationRole. So every spawned session drew on the
+# Claude subscription, not on API billing. Re-check with `env | grep ^ANTHROPIC`
+# before trusting that here; setting an API key in the environment would move the
+# billing without changing anything else here.
+#
+# The loop spends on three axes, in rough order of size:
+#   1. Sessions. Review and run are separate contexts by design, so the brief and
+#      AGENTS.md are read twice. That is the price of the implementer not inheriting
+#      the reviewer's conclusions.
+#   2. effort. It multiplies thinking per turn, so it costs most where turns are
+#      many — a long implementation run, not a short read-only review. That is why
+#      review defaults higher than run despite being the cheaper session overall.
+#   3. model.
+# `/usage` in any interactive session shows the remaining window before you launch
+# something large.
+
+# Four blocks below are sessions this file can configure. The rest inherit, and knowing
+# which is which is the difference between a setting and a wish:
+#
+#   specs / rewrite / compound   the BRAIN session — whatever you launched the vault
+#                                session with. Not settable from here. Suggested:
+#                                opus, effort high; /model to opus max before /debrief,
+#                                which is the most reasoning-dense of the three.
+#   review                       repo session #1 — the read-only audit of a draft
+#                                brief. Set by `defaults.review` below.
+#   run                          repo session #2 — the implementation. Set by
+#                                `defaults.run` below.
+#   close                        repo session #3 — the audit of a finished run,
+#                                launched by handoff-launch.sh's own `close` stage
+#                                (not stamped into any brief). Set by `defaults.close`
+#                                below.
+#   revise / debrief             the vault sessions the loop launches unattended
+#                                between repo stages. Set by `defaults.vault` below.
+#   /handoff-close                a skill run INSIDE the run session as its last act,
+#                                not a separate stage — it inherits the run's own
+#                                model and effort, not `defaults.close` (that block
+#                                configures the close STAGE, the audit that follows).
+
+defaults:
+  review:
+    # The cheapest session in the loop — short, read-only, few turns — and the one
+    # gating the most expensive. Its mechanical half (does this file exist, does this
+    # make target exist) any model does; the half that pays for itself is noticing the
+    # assumption nobody stated, which is where model capability beats thinking budget.
+    model: opus
+    # medium, not high, measured on the real reviews: turn count, not thinking depth,
+    # is what the review spends. Batching read commands into one call per turn (a
+    # review wrapper instruction) cut a 24-call review toward a handful of batched
+    # turns — that is where the tokens went. Effort multiplies per-turn thinking, and
+    # subagents inherit it, so medium buys the refuters headroom without dulling the
+    # lens. high stays the dial to reach for if a review starts missing code-level
+    # falsehoods rather than merely taking more turns.
+    effort: medium
+    permission-mode: acceptEdits
+    # A hard tool denial, not a permission prompt. Verified 2026-08-25: the session
+    # reports "No such tool available: Write. Write is disabled for this session, in
+    # subagents as well as here" — so acceptEdits cannot widen it, and a subagent
+    # cannot route around it. Bash still runs, which is what makes the review able to
+    # check claims instead of only reading.
+    disallowed-tools: Edit,Write,NotebookEdit
+
+  run:
+    # Against a reviewed brief, execution is well-specified, which is sonnet's
+    # strength and the better economics for by far the longest session in the loop.
+    model: sonnet
+    # Effort multiplies thinking per turn, and this session has the most turns — so
+    # this dial, more than any other here, is where the subscription goes. Medium
+    # since 2026-09-23: a reviewed brief leaves the run little to think about,
+    # and the close audit catches what it misses; effort only earns its cost in the
+    # short debugging stretches and the end-of-run self-audit. A run that needs high or
+    # max to succeed is an underspecified brief, and a higher dial hides that instead
+    # of surfacing it as a finding the next review can act on. If a run fails at
+    # medium, the fix belongs in /handoff-revise before it belongs here. The hermes run
+    # profile is pinned to the same value so the two backends compare like for like.
+    effort: medium
+    # Interactive and watched. Deliberately not bypassPermissions: the run works on a
+    # real branch, and the prompts are the last thing standing between a wrong brief
+    # and a push.
+    permission-mode: acceptEdits
+    # Scope creep is where it actually happens: a capable agent's default failure is
+    # building more than was asked. The loop measures this for you: chosen divergences
+    # land in the report's DIVERGED section, so one run tells you whether it helped or
+    # fought the brief.
+    disallowed-tools: ''
+  # A vault stage (revise, debrief) is not stamped into the brief — /handoff describes
+  # repo sessions. handoff-launch.sh reads this block directly, per-main `vault:`
+  # override first. Both stages apply a structured block to vault files by rule; the
+  # judgment already happened in the review. Unattended, so the mode must never ask.
+  vault:
+    model: sonnet
+    effort: medium
+    permission-mode: bypassPermissions
+    disallowed-tools: ''
+  # The close STAGE (audit of a finished run) is not stamped into the brief either —
+  # same reason as vault above. handoff-launch.sh reads this block directly, per-main
+  # `close:` override first. The audit is the most mechanical session in the loop:
+  # re-check the executor's claims against the repo, no design judgment involved.
+  close:
+    model: sonnet
+    effort: medium
+    permission-mode: bypassPermissions
+    disallowed-tools: Edit,Write,NotebookEdit
+
+# Per-main overrides. Only the keys named here change; everything else falls through
+# to defaults. Add a main only when it has a real reason to differ, and write the
+# reason next to it — an override with no rationale is one nobody can ever remove.
+per-main:
+  devices:
+    run:
+      # Runs against physical devices where a bad command is recovered on site.
+      # Every action gets confirmed.
+      permission-mode: manual
+
+# Orchestration budgets, read by /handoff-plan into each plan's `budgets:` block (the plan
+# is then the record, like a brief's session blocks) and by handoff-orchestrate.sh for the
+# disk threshold. Minutes. `phase` is wall-clock for the whole phase; `heartbeat` is how
+# long a stage's transcript may sit unchanged before the watchdog calls it stalled — file
+# size is not a heartbeat on this launcher (a delegated `claude -p` writes 0 bytes until
+# it exits), so the sources are per backend and live in the orchestrator.
+orchestration:
+  budgets:
+    review: 45
+    revise: 30
+    run: 240
+    close: 30
+    debrief: 30
+    phase: 1440
+    heartbeat: 20
+  disk-min-free-gb: 5      # a root shared with docker fills up; ENOSPC looks like a silent stall
+  notify: telegram         # '' = status file only; the token lives in ~/.config/handoff/notify.env

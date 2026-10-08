@@ -1,0 +1,28 @@
+FAIL	sweep	§0	Background lives in
+WARN	git	§0	feat/local-only origin/dev
+WARN	git	§0	Branch to create
+WARN	git	§2	Base:
+WARN	git	§2	was cut from
+WARN	git	§2	3 commits ahead
+WARN	git	§2	holds the old parser
+WARN	git	§2	The latest tag is
+WARN	git	§2	feat/ghost
+WARN	git	§2	has no upstream
+WARN	git	§2	on this host
+WARN	path	§2	missing.js
+WARN	path	§2	nothing_here.py
+WARN	path	§2	tests/e2e/
+WARN	path	§2	in the tree
+WARN	line	§2	src/app.py:99
+WARN	line	§2	(25 lines)
+WARN	line	§2	src/app.py:30
+WARN	line	§2	is at :35
+WARN	symbol	§2	computeTotals
+WARN	symbol	§2	on load
+WARN	symbol	§2	There is no
+WARN	done-when	§4	looks right in the browser
+WARN	done-when	§4	feels faster
+WARN	done-when	§4	about 5 minutes
+WARN	done-when	§4	lists the checks
+WARN	boundary	§6	are allowed in
+WARN	size	§7	## §7 Tasks

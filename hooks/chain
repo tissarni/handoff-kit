@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# handoff git hook wrapper, installed under every other hook name. core.hooksPath is
+# overridden for the session, which would silently skip the repo's own hook (a repo may
+# run the pre-commit framework from .git/hooks/pre-commit). Hand over to it when it exists.
+OWN="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/$(basename "$0")"
+[ -x "$OWN" ] && exec "$OWN" "$@"
+exit 0

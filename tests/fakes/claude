@@ -1,0 +1,309 @@
+#!/usr/bin/env bash
+# Fake `claude` CLI for the handoff harness. Protocol: tests/README (§3.8 of the brief
+# that introduced it). Driven entirely by FAKE_CLAUDE, FAKE_VAULT and FAKE_STATE_DIR.
+set -euo pipefail
+
+NAME=""
+PROMPT=""
+SESSION_ID=""
+RESUMED=0
+args=("$@")
+i=0
+n=${#args[@]}
+while [ "$i" -lt "$n" ]; do
+  a="${args[$i]}"
+  case "$a" in
+    --name) i=$((i+1)); NAME="${args[$i]:-}" ;;
+    --session-id) i=$((i+1)); SESSION_ID="${args[$i]:-}" ;;
+    --resume) i=$((i+1)); SESSION_ID="${args[$i]:-}"; RESUMED=1 ;;
+    --) i=$((i+1)); PROMPT="${args[$i]:-}"; i=$n ;;
+  esac
+  i=$((i+1))
+done
+
+read -r STAGE BRIEF_BASE _rest <<<"$NAME"
+[ -n "$SESSION_ID" ] || SESSION_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+
+BRIEF_FILE=""
+[ -n "${BRIEF_BASE:-}" ] && BRIEF_FILE="$(find "$FAKE_VAULT/02-projects" -name "${BRIEF_BASE}.md" 2>/dev/null | head -1)"
+
+behavior=""
+if [ -n "${FAKE_CLAUDE:-}" ]; then
+  IFS=',' read -ra _pairs <<<"$FAKE_CLAUDE"
+  for p in "${_pairs[@]}"; do
+    k="${p%%=*}"; v="${p#*=}"
+    [ "$k" = "$STAGE" ] && behavior="$v"
+  done
+fi
+case "$STAGE" in
+  review)  behavior="${behavior:-RUN}" ;;
+  revise)  behavior="${behavior:-clean}" ;;
+  run)     behavior="${behavior:-complete}" ;;
+  close)   behavior="${behavior:-PASS}" ;;
+  debrief) behavior="${behavior:-closed}" ;;
+  *)       behavior="${behavior:-complete}" ;;
+esac
+
+# A FAIL once, then the second close: PASS after a fix-up, or a verdict on the proof
+case "$behavior" in
+  FAIL-fixable-once|FAIL-preexisting-once|FAIL-fixable-pre-once)
+    if [ ! -f "$FAKE_STATE_DIR/fail-once-$STAGE" ]; then
+      touch "$FAKE_STATE_DIR/fail-once-$STAGE"
+      behavior="${behavior%-once}"
+    elif [ "$behavior" = "FAIL-fixable-once" ]; then
+      behavior=PASS
+    else
+      behavior=judge-proof
+    fi ;;
+esac
+
+MARKER_FILE="$FAKE_STATE_DIR/limit-once-$STAGE"
+if [ "$behavior" = "limit-once" ]; then
+  if [ ! -f "$MARKER_FILE" ]; then
+    touch "$MARKER_FILE"
+    behavior="limit"
+  else
+    case "$STAGE" in
+      review) behavior=RUN ;; revise) behavior=clean ;; run) behavior=complete ;;
+      close) behavior=PASS ;; debrief) behavior=closed ;;
+    esac
+  fi
+fi
+
+REV=""
+if [ -n "$BRIEF_FILE" ]; then
+  REV="$(python3 - "$BRIEF_FILE" <<'PY'
+import sys
+for l in open(sys.argv[1], encoding='utf-8').read().splitlines()[1:]:
+    if l.strip() == '---': break
+    if l.startswith('revision:'):
+        print(l.split(':', 1)[1].strip().strip('"\'')); break
+PY
+)"
+fi
+
+STDOUT_TEXT=""
+TRANSCRIPT_TEXT=""
+EXIT=0
+WROTE_TRANSCRIPT=0
+
+write_transcript() {   # $1 = text for the transcript's assistant block
+  local cwd_sed dir
+  cwd_sed="$(printf '%s' "$PWD" | sed 's/[^A-Za-z0-9]/-/g')"
+  dir="$HOME/.claude/projects/$cwd_sed"
+  mkdir -p "$dir"
+  # A resumed session appends to its transcript, as the real CLI does; every row is stamped.
+  python3 - "$dir/$SESSION_ID.jsonl" "$PROMPT" "$1" "$RESUMED" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+path, prompt, text, resumed = sys.argv[1:5]
+now = datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+rows = [
+    {"type": "user", "timestamp": now, "message": {"role": "user", "content": [{"type": "text", "text": prompt}]}},
+    {"type": "assistant", "timestamp": now, "message": {
+        "id": "msg_fake_resume" if resumed == '1' else "msg_fake", "model": "claude-sonnet-5",
+        "content": [{"type": "text", "text": text}],
+        "usage": {"input_tokens": 3, "cache_creation_input_tokens": 100,
+                   "cache_read_input_tokens": 200, "output_tokens": 20},
+    }},
+]
+with open(path, 'a' if resumed == '1' else 'w', encoding='utf-8') as f:
+    for r in rows:
+        f.write(json.dumps(r) + "\n")
+PY
+  WROTE_TRANSCRIPT=1
+}
+
+log_call() {
+  printf '%s\0' "$@" >"$FAKE_STATE_DIR/.last_argv.$$"
+  python3 - "$FAKE_STATE_DIR/calls.log" "$STAGE" "${BRIEF_BASE:-}" "$PWD" "$FAKE_STATE_DIR/.last_argv.$$" <<'PY'
+import json, os, sys
+log, stage, brief, cwd, argv_file = sys.argv[1:6]
+argv = open(argv_file, 'rb').read().split(b'\0')[:-1]
+argv = [a.decode('utf-8', 'replace') for a in argv]
+env = {k: v for k, v in os.environ.items()
+       if k.startswith(('HANDOFF_', 'GIT_CONFIG_', 'PYTEST_', 'PONYTAIL_', 'CLAUDE_BASH_')) or k in ('VAULT', 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS', 'BASH_DEFAULT_TIMEOUT_MS', 'BASH_MAX_TIMEOUT_MS', 'ENABLE_CLAUDEAI_MCP_SERVERS')}
+rec = {"stage": stage, "brief": brief, "cwd": cwd, "argv": argv, "env": env}
+if '--settings' in argv:
+    sp = argv[argv.index('--settings') + 1]
+    if os.path.isfile(sp):
+        rec['settings_path'] = sp
+        try:
+            rec['settings'] = json.load(open(sp, encoding='utf-8'))
+        except Exception:
+            rec['settings'] = None
+    else:
+        try:
+            rec['settings'] = json.loads(sp)
+        except Exception:
+            rec['settings'] = None
+with open(log, 'a', encoding='utf-8') as f:
+    f.write(json.dumps(rec) + "\n")
+PY
+  rm -f "$FAKE_STATE_DIR/.last_argv.$$"
+}
+
+if [ "$behavior" = "limit" ]; then
+  # A case can print another wording: its exact text in $FAKE_STATE_DIR/limit-text.
+  STDOUT_TEXT="$(cat "$FAKE_STATE_DIR/limit-text" 2>/dev/null || echo "You've hit your usage limit · resets 5pm (Europe/Paris)")"
+  TRANSCRIPT_TEXT="$STDOUT_TEXT"
+  EXIT=1
+else
+  case "$STAGE" in
+    review)
+      case "$behavior" in
+        RUN) verdict=RUN ;; REVISE) verdict=REVISE ;; REWRITE) verdict=REWRITE ;; *) verdict=RUN ;;
+      esac
+      STDOUT_TEXT="=== HANDOFF REVIEW ===
+verdict: $verdict
+- [WRONG] fake finding for testing
+=== END HANDOFF REVIEW ==="
+      TRANSCRIPT_TEXT="$STDOUT_TEXT"
+      ;;
+    revise)
+      REVIEW_FILE="${BRIEF_FILE%.md}.review.md"
+      if [ "$behavior" = "held" ]; then
+        printf '\n## Revise outcome\n\nheld for testing\n\ngate: held — fake: a decision is needed\n' >>"$REVIEW_FILE"
+        STDOUT_TEXT="[fake revise] left at held"
+      else
+        python3 - "$BRIEF_FILE" <<'PY'
+import io, sys
+path = sys.argv[1]
+lines = io.open(path, encoding='utf-8').read().split('\n')
+end = next(i for i, l in enumerate(lines[1:], 1) if l.strip() == '---')
+seen = False
+for i in range(1, end):
+    if lines[i].startswith('handoff:'):
+        lines[i] = 'handoff: ready'; seen = True
+if not seen:
+    lines.insert(end, 'handoff: ready')
+io.open(path, 'w', encoding='utf-8', newline='').write('\n'.join(lines))
+PY
+        printf '\n## Revise outcome\n\napplied for testing\n\ngate: clean\n' >>"$REVIEW_FILE"
+        STDOUT_TEXT="[fake revise] handoff -> ready"
+      fi
+      TRANSCRIPT_TEXT="$STDOUT_TEXT"
+      ;;
+    run)
+      # partial, blocked, not-done: `complete`, with a report that says otherwise
+      outcome=COMPLETE; audit="3 checked, 0 refuted, 0 unconfirmed"; not_done="- none"
+      case "$behavior" in
+        partial)  outcome=PARTIAL; audit="3 checked, 1 refuted, 1 unconfirmed"; behavior=complete ;;
+        blocked)  outcome=BLOCKED; behavior=complete ;;
+        not-done) outcome=PARTIAL; not_done="- task 2 left for a later brief"; behavior=complete ;;
+      esac
+      REPORT_BLOCK="=== COMPLETION REPORT ===
+brief-revision: $REV
+outcome: $outcome
+audit: $audit
+--- NOT DONE ---
+$not_done
+=== END COMPLETION REPORT ==="
+      case "$behavior" in
+        complete)
+          STDOUT_TEXT="$REPORT_BLOCK"
+          TRANSCRIPT_TEXT="$REPORT_BLOCK"
+          ;;
+        commit)
+          echo fake >"fake-${BRIEF_BASE}.txt"
+          git add "fake-${BRIEF_BASE}.txt"
+          git commit -q -m "test: fake run ${BRIEF_BASE}"
+          STDOUT_TEXT="$REPORT_BLOCK"
+          TRANSCRIPT_TEXT="$REPORT_BLOCK"
+          ;;
+        no-report)
+          STDOUT_TEXT="I looked into it and have some thoughts, but nothing final yet."
+          TRANSCRIPT_TEXT="$STDOUT_TEXT"
+          ;;
+        transcript-only)
+          STDOUT_TEXT="Leftover timer. Nothing further."
+          TRANSCRIPT_TEXT="$REPORT_BLOCK"
+          ;;
+        wait)
+          write_transcript "$REPORT_BLOCK"
+          touch "$FAKE_STATE_DIR/run-started"
+          w=0
+          while [ ! -f "$FAKE_STATE_DIR/run-release" ] && [ "$w" -lt 60 ]; do sleep 1; w=$((w+1)); done
+          STDOUT_TEXT="$REPORT_BLOCK"
+          ;;
+      esac
+      ;;
+    close)
+      class_line=""
+      case "$behavior" in
+        PASS) v=PASS; f="— confirmed — fake finding" ;;
+        FAIL) v=FAIL; f="— refuted — fake finding" ;;
+        FAIL-accept) v=FAIL; f="— refuted — fake finding"; class_line="
+CLASS: accept?" ;;
+        FAIL-fixable) v=FAIL; f="- §4.1 fake criterion — refuted — fake evidence: exit 1"; class_line="
+CLASS: fixable" ;;
+        FAIL-mixed) v=FAIL; f="- §4.1 fake criterion — refuted — fake evidence: exit 1
+- the report — refuted. fake evidence"; class_line="
+CLASS: fixable" ;;
+        FAIL-unprefixed) v=FAIL; f="- the PR description — refuted — fake evidence"; class_line="
+CLASS: fixable" ;;
+        FAIL-preexisting) v=FAIL; f="- §4.1 fake criterion — pre-existing? — fake evidence: the report says it fails on the base too"; class_line="
+CLASS: accept?" ;;
+        FAIL-fixable-pre) v=FAIL; f="- §4.1 fake criterion — refuted — fake evidence: exit 1
+- §4.2 fake suite — pre-existing? — fake evidence: the report says it fails on the base too"; class_line="
+CLASS: fixable" ;;
+        judge-proof)
+          # PASS only when the prompt carries a proof that proves every item it lists
+          if printf '%s\n' "$PROMPT" | /usr/bin/grep -q '^§4\.[0-9]* · proven' \
+             && ! printf '%s\n' "$PROMPT" | /usr/bin/grep -q '^§4\.[0-9]* · not proven'; then
+            v=PASS; f="- §4.1 fake criterion — out-of-scope — proven pre-existing on the base"
+          else
+            v=FAIL; f="- §4.1 fake criterion — refuted — not proven on the base"; class_line="
+CLASS: accept?"
+          fi ;;
+        *) v=PASS; f="— confirmed — fake finding" ;;
+      esac
+      STDOUT_TEXT="=== CLOSE AUDIT ===
+VERDICT: $v$class_line
+REPORT_REVISION: $REV
+FINDINGS:
+$f
+=== END CLOSE AUDIT ==="
+      TRANSCRIPT_TEXT="$STDOUT_TEXT"
+      ;;
+    resume)
+      # the fix-up: re-emits the whole report, or (no-report) ends without one
+      case "$behavior" in
+        no-report) STDOUT_TEXT="I could not finish the fix." ;;
+        *) STDOUT_TEXT="=== COMPLETION REPORT ===
+brief-revision: $REV
+outcome: COMPLETE
+audit: 3 checked, 0 refuted, 0 unconfirmed
+--- NOT DONE ---
+- none
+=== END COMPLETION REPORT ===" ;;
+      esac
+      TRANSCRIPT_TEXT="$STDOUT_TEXT"
+      ;;
+    debrief)
+      REPORT_FILE="${BRIEF_FILE%.md}.report.md"
+      python3 - "$BRIEF_FILE" <<'PY'
+import io, sys
+path = sys.argv[1]
+lines = io.open(path, encoding='utf-8').read().split('\n')
+end = next(i for i, l in enumerate(lines[1:], 1) if l.strip() == '---')
+seen = False
+for i in range(1, end):
+    if lines[i].startswith('handoff:'):
+        lines[i] = 'handoff: closed'; seen = True
+if not seen:
+    lines.insert(end, 'handoff: closed')
+io.open(path, 'w', encoding='utf-8', newline='').write('\n'.join(lines))
+PY
+      printf '\n## Debrief outcome\n\nclosed for testing\n' >>"$REPORT_FILE"
+      STDOUT_TEXT="[fake debrief] handoff -> closed"
+      TRANSCRIPT_TEXT="$STDOUT_TEXT"
+      ;;
+  esac
+fi
+
+[ "$WROTE_TRANSCRIPT" = "1" ] || write_transcript "$TRANSCRIPT_TEXT"
+log_call "$@"
+
+printf '%s\n' "$STDOUT_TEXT"
+exit "$EXIT"

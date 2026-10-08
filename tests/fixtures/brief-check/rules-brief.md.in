@@ -1,0 +1,110 @@
+---
+repo: @REPO@
+branch: feat/x
+---
+
+# Fixture brief
+
+## §0 Session preamble
+
+- You are on `feat/x`, in sync with origin at `@F2@`.
+- Background lives in [[design-note]].
+- First step: `git checkout -b feat/local-only origin/dev`.
+- Or: `git checkout -b feat/new-thing origin/dev`.
+- Branch to create: `feat/x`.
+
+## §1 Why this exists
+
+The fixture exercises every rule once.
+
+## §2 State
+
+- Base: `main` @ `@C1@`.
+- `main` was at `@C1@` before the release.
+- `dev` @ `@D2@`.
+- `origin/dev` (`@D2@`).
+- Branch `feat/x`, cut from `dev` at `@D1@`.
+- Branch `feat/x` was cut from `dev` at `@D2@`.
+- `feat/x` is 2 commits ahead of `dev`, 1 behind.
+- `feat/x` is 3 commits ahead of `dev`.
+- Commit `abc1234` holds the old parser.
+- The run id is `0f8fad5b-d9cb-469f-a165-70867728950e`.
+- `/opt/other-repo` is read-only, `main` @ `abc1234`.
+- The latest tag is `v1.0.0`.
+- Release tag `v1.1.0` is on `main`.
+- `feat/ghost` holds the spike.
+- `feat/new-thing` will be cut from `dev`.
+- `feat/x` has no upstream yet.
+- `feat/local-only` is not on origin.
+- `feat/local-only` does not exist on this host.
+- `feat/brand-new` does not exist yet.
+- `src/app.py` holds `make_thing` and `WidgetPanel`.
+- `src/web/helpers.js` exports `computeTotal`.
+- `web/helpers.js` is imported by the page.
+- `helpers.js` is small.
+- `src/web/missing.js` renders the header.
+- `nothing_here.py` is imported by the CLI.
+- `tests/e2e/` holds the browser tests.
+- `ExampleOrg/example-lib` is the dependency.
+- `https://example.com/a.js` is the CDN copy.
+- `src/app.py` does not exist in the tree.
+- `src/new_module.py` does not exist yet.
+- `notes/guide.md` is where the guide goes.
+- `src/app.py:10` defines `make_thing`.
+- `src/app.py:99` is the entry point.
+- `make_thing` is at `src/app.py:30`.
+- In `src/app.py`, `WidgetPanel` is at :20.
+- In `src/app.py`, `WidgetPanel` is at :35.
+- `src/app.py` (40 lines) is the entry module.
+- `src/web/helpers.js` (25 lines) holds the helpers.
+- `computeTotals` sums the cart.
+- `src/web/helpers.js` calls `make_thing` on load.
+- There is no `computeTotal` helper yet.
+
+## §3 Settled
+
+- Nothing to settle.
+
+## §4 Goal, and Done when
+
+Goal: the header looks right in the browser.
+
+1. `python3 -m pytest -q tests` exits 0.
+2. The page feels faster.
+3. The run takes about 5 minutes, measured with `time make`.
+4. The PR description lists the checks.
+
+## §5 Step 0
+
+- Read `src/app.py` and `README.md`.
+
+## §6 Constraints
+
+- Never edit `src/app.py` by hand.
+- Formatting-only changes are allowed in `tests/`.
+
+## §7 Tasks
+
+1. Create `notes/guide.md`.
+2. Write the parser.
+3. Wire the parser in.
+4. Add the tests.
+5. Update the docs.
+6. Tidy up.
+7. Sync, push, update the PR.
+
+## §8 Out of scope
+
+- none
+
+## §9 Known traps
+
+- `src/web/helpers.js:5` is where `computeTotal` starts.
+
+## §10 What this brief may be wrong about
+
+- none
+
+## §11 Human checks
+
+- none

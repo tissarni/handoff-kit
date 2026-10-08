@@ -1,0 +1,174 @@
+# The handoff kit
+
+The kit runs agent sessions from written briefs: a review, a revise, the run itself, a close
+and a debrief, each in a fresh session. A driver runs a plan's phase of briefs one after
+another, unattended, and a watchdog timer keeps an eye on it.
+
+It works with a **vault**: the notes repo that holds your briefs and plans. "Vault" is the
+kit's own word for that repo.
+
+## What it needs
+
+- Linux, with bash, git and python3 (standard library only).
+- GNU coreutils (`readlink -f`, `timeout`, `mktemp`, `date -d`, `stat -c`), util-linux
+  (`flock`, `setsid`), procps (`pgrep`), awk and sed.
+- An agent CLI: `claude` by default, or `hermes` or `devin`.
+- `gh` for a GitHub origin, or `glab` for a GitLab one.
+- Optionally, a systemd user session (`systemctl`, `systemd-escape`) for the watchdog, and
+  `curl` with `notify.env` for messages.
+
+## The vault it works with
+
+- **A defaults file**, named by `HANDOFF_DEFAULTS` (a path relative to the vault).
+  - For a brief with no `vault-session:` or `close-session:` block, the launcher reads
+    `defaults:` `vault:` or `close:`, with `per-main: <main>: <key>:` laid over.
+  - `defaults:` `review:` and `run:` hold what your brief-writing tool stamps into a brief's
+    own blocks.
+  - The orchestrator reads only `orchestration:` `disk-min-free-gb:`.
+  - `tests/fixtures/handoff-defaults.yml` is a full example.
+- **A projects directory**, named by `HANDOFF_PROJECTS`.
+  - A brief's main is the path segment after the one equal to `HANDOFF_PROJECTS`; its sub is
+    the directory two levels above the brief file, so a brief sits at
+    `<projects>/<main>/.../<sub>/specs/<brief>.md`.
+  - `HANDOFF_PROJECTS` must be a single directory name. A multi-segment value such as `a/b`
+    never matches, so a brief's main comes out empty and the per-main defaults are skipped.
+- **A brief's frontmatter:**
+  - `handoff:`, the brief's state: draft, reviewed, ready, running, reported or closed;
+  - `revision:` and `repo:`, both required;
+  - `branch:`;
+  - the stage blocks `review-session:` and `run-session:` (model, effort, permission-mode,
+    disallowed-tools);
+  - its §4 "Done when" items, which `brief-check --done-when` lists and the close stage
+    re-runs.
+- **A plan's frontmatter:**
+  - `project`;
+  - `orchestration`: planned, running, paused, broken, phase-done or done;
+  - `backend`, `model`, `phase`, `branch`, `base`, `budgets`, `notify` and `setup`;
+  - `phases:` entries, each with `name`, `briefs: [...]` (a flow list; a relative brief
+    resolves against the plan's directory), `status`, an optional `branch` and
+    `why-cut-here`.
+- **Skills the stages call.** `/handoff-review` and `/handoff-close` ship in `skills/`.
+  `/handoff-revise` and `/debrief` run in the vault stages, so the vault provides them.
+  `/capture-lesson` (the lesson stage) must come from elsewhere.
+
+## Install
+
+Clone the kit, then run:
+
+```
+bash install.sh --vault <dir> --defaults <path relative to the vault> --projects <dir>
+```
+
+for example `--vault ~/notes --defaults templates/handoff-defaults.yml --projects projects`.
+
+It writes, all under `$HOME`:
+
+- `~/.config/handoff/config.env`: `VAULT`, `HANDOFF_DEFAULTS` and `HANDOFF_PROJECTS`; other
+  lines are kept;
+- `~/.local/bin/handoff-launch`, `handoff-orchestrate` and `brief-check`: symlinks into
+  this kit;
+- `~/.claude/skills/<name>/`: each skill under `skills/`, replaced whole;
+- `~/.config/systemd/user/handoff-watchdog@.service` and `.timer`, copied from `systemd/`.
+
+A flag left out keeps the value `config.env` already has. The environment's `VAULT`,
+`HANDOFF_DEFAULTS` and `HANDOFF_PROJECTS` are ignored by the installer. Run it again after
+every pull of the kit. `~/.local/bin` must be on your `PATH`. Nothing is enabled: `start`
+and `resume` arm each plan's timer. It exits 1 on a refusal and 2 on a bad flag.
+
+## Config
+
+- `~/.config/handoff/config.env` holds `VAULT`, `HANDOFF_DEFAULTS` and `HANDOFF_PROJECTS`.
+  The environment wins, key by key. A missing key stops the script, naming the key.
+- Neither config file is ever sourced. Each line is one `KEY=value`; the last line for a key
+  wins and quotes are stripped.
+- `~/.config/handoff/notify.env` holds `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, used by
+  a plan with `notify: telegram`.
+
+## Commands
+
+### `handoff-launch <mode> <brief>`
+
+A relative brief is relative to the vault.
+
+Every Claude stage starts with `ENABLE_CLAUDEAI_MCP_SERVERS=false` and with user-scope plugins off unless the stage's own project enables them, so an unattended stage cannot reach the operator's connected services and does not pay their tool and skill descriptions on every turn.
+
+- **Modes:**
+  - `review`: read-only and headless; writes `<brief>.review.md`. A brief-check FAIL stops it
+    with exit 12 before any session starts;
+  - `run`: the implementation, interactive; with `--delegate`, headless and unattended, the
+    report written to `<brief>.report.md`;
+  - `revise` and `debrief`: each a headless vault session;
+  - `close`: a read-only repo session that audits the report into `<brief>.close.md`;
+  - `loop`: chains the stages from the brief's current `handoff:` state;
+  - `lesson <brief> --note <file>` and `resume <brief> --session <id> --note <file>`.
+- **Flags:** `--gate auto|human` (loop), `--dry-run`, `--delegate`, `--stream` (review),
+  `--prove N[,N…]` (close; the loop passes it), `--backend claude|hermes|devin` and
+  `--model`.
+- **Loop exits:** 0 closed; 10 gate held, with `GATE: …`; 20 the run failed the check, with
+  `RUN: …`; 30 launcher error.
+- **Environment:** `HANDOFF_ALLOW_FREE_RUN=1`, `HANDOFF_DONE_WHEN_TIMEOUT=<s>` (600 by
+  default), `HANDOFF_BASE=<branch>` and `HANDOFF_KIT`.
+
+### `handoff-orchestrate start|tick|status|stop|resume <plan> [--backend <b>] [--model <m>]`
+
+- `start` runs the pre-flight, records the repo baseline, takes the lock and launches a
+  detached driver. `tick` is the watchdog pass, `status` prints the first line of
+  `<plan>.status.md`, `stop` kills the driver and marks the plan paused, `resume` continues
+  from the first brief not closed. The header of the script lists the files kept beside a
+  plan.
+- **Exits:** 0 ok, or broke and said so; 1 usage or state error; 2 a pre-flight check failed
+  and nothing launched.
+- **Environment:** `HANDOFF_LIMIT_WAIT` (1800 s by default), `HANDOFF_ORCH_ALLOW_CONCURRENT=1`
+  and `HANDOFF_KIT`.
+- A plan whose checkout is the one the kit runs from is refused.
+
+### `brief-check`
+
+- `brief-check <brief.md> [--at <ISO time>] [--repo <dir>] [--branch <name>]`
+- `brief-check --facts <repo> <branch>`
+- `brief-check --done-when <brief.md>`
+- `brief-check --backtest <labels.tsv> [--vault <dir>] [--fail <checks>]`
+- `brief-check --help`
+
+Exit 1 when a FAIL line prints, 2 on a usage error, 0 otherwise.
+
+The sweep fails a brief's lines that point at something the run cannot follow: wiki links,
+note paths, decision numbers, the word "vault", pointers to other notes, and brief and plan
+file names. Its rule for "vault":
+
+- a brief whose repo has the kit's three scripts at its top level may say "vault";
+- a brief whose repo is a vault may also name note paths;
+- brief-check knows a vault by a fixed top-level directory name, hard-coded in `run_sweep`.
+
+`--backtest` without `--vault` takes the git top level of the kit's own directory. That is
+the vault only while the kit sits inside it.
+
+## Watchdog
+
+The timer fires 5 minutes after boot, then every 30 minutes, and runs
+`handoff-orchestrate tick <plan>`. `start` and `resume` arm a plan's timer, and the driver
+disables it after the last phase. Without a systemd user session, run
+`/loop 30m handoff-orchestrate tick <plan>` in an agent session instead.
+
+## Tests
+
+- `bash tests/run.sh [case…]` runs every case, or the cases named.
+- Each case has its own sandbox, with its own `HOME` and `PATH` and fake `claude`, `gh`,
+  `glab`, `curl` and `systemctl`.
+- `HANDOFF_SCRIPTS_DIR=<dir>` runs the cases against the scripts in `<dir>`.
+- Never run `tests/probe-headless-guard.sh`: it starts real, paid sessions.
+
+## Layout
+
+- `handoff-launch.sh`: the launcher, one session per stage.
+- `handoff-orchestrate.sh`: the driver and the watchdog pass.
+- `brief-check.sh`: checks a brief's claims against its repo.
+- `handoff-usage.py`: prices a Claude Code session transcript from its usage rows.
+- `install.sh`: installs the kit for the current user.
+- `hooks/`: the git hooks the launcher sets for a stage session.
+- `guards/`: a guard that refuses background waits in headless stages.
+- `skills/`: the repo-side skills `handoff-review` and `handoff-close`.
+- `systemd/`: the watchdog service and timer units.
+- `tests/`: the suite, its fakes and fixtures.
+- `AGENTS.md`, `CLAUDE.md`: rules for an agent working on the kit.
+- `.gitattributes`, `.gitignore`: LF line endings and ignored caches.

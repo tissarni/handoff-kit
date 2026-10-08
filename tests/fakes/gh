@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Fake gh: logs its argv. `pr create` stores and prints a fixed URL; `pr list` prints
+# the stored URL if one exists, else nothing; anything else exits 0.
+set -euo pipefail
+printf '%s\n' "$*" >>"$FAKE_STATE_DIR/gh.log"
+case "${1:-}:${2:-}" in
+  pr:create)
+    url="https://github.com/test/repo/pull/1"
+    printf '%s' "$url" >"$FAKE_STATE_DIR/gh-pr-url"
+    echo "$url"
+    ;;
+  pr:list)
+    [ -f "$FAKE_STATE_DIR/gh-pr-url" ] && cat "$FAKE_STATE_DIR/gh-pr-url"
+    ;;
+esac
+exit 0

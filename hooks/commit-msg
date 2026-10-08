@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# handoff git hook (see prepare-commit-msg). Refuses, loudly, an agent commit that still
+# carries Co-Authored-By or lacks the Harness:/Model: trailers — the case where
+# prepare-commit-msg was bypassed. Manual shells (no HANDOFF_HARNESS) only chain.
+set -eu
+MSG="$1"
+if [ -n "${HANDOFF_HARNESS:-}" ]; then
+  BODY="$(git stripspace --strip-comments <"$MSG")"
+  if printf '%s\n' "$BODY" | grep -qiE '^[[:space:]]*Co-Authored-By:'; then
+    printf 'handoff commit-msg: Co-Authored-By is not allowed on agent commits. Commit again without it; the Harness:/Model: trailers are added for you.\n' >&2
+    exit 1
+  fi
+  TRAILERS="$(printf '%s\n' "$BODY" | git interpret-trailers --parse)"
+  if ! printf '%s\n' "$TRAILERS" | grep -q '^Harness: ' || ! printf '%s\n' "$TRAILERS" | grep -q '^Model: '; then
+    printf 'handoff commit-msg: missing Harness:/Model: trailers — prepare-commit-msg did not run (--no-verify?). Commit without --no-verify.\n' >&2
+    exit 1
+  fi
+fi
+OWN="$(git rev-parse --git-common-dir)/hooks/$(basename "$0")"
+[ -x "$OWN" ] && exec "$OWN" "$@"
+exit 0

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fake curl: never reaches the network. Logs its argv and succeeds.
+set -euo pipefail
+printf '%s\n' "$@" >>"$FAKE_STATE_DIR/curl.log"
+exit 0

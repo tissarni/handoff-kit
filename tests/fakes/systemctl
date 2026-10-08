@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Fake systemctl: no systemd user session in the sandbox. Always fails, so
+# arm_watchdog/retire_watchdog print their NOTE and arm/retire nothing.
+exit 1

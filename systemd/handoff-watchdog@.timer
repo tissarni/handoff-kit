@@ -1,0 +1,11 @@
+[Unit]
+Description=30-minute watchdog for handoff-orchestrate plan %I
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

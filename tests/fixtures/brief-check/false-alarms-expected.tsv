@@ -1,0 +1,6 @@
+WARN	path	§2	lib/not_there.py
+WARN	path	§2	missing_tool.sh
+WARN	path	§2	flat modules
+WARN	path	§2	src/web/missing.js
+WARN	git	§2	feat/ghost
+WARN	git	§2	holds the release

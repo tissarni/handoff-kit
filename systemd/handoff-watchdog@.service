@@ -1,0 +1,7 @@
+[Unit]
+Description=handoff-orchestrate watchdog tick for %I
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash %h/.local/bin/handoff-orchestrate tick %I

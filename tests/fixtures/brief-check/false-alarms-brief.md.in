@@ -1,0 +1,58 @@
+---
+repo: @REPO@
+branch: feat/x
+---
+
+# False-alarm fixture
+
+## §0 Session preamble
+
+- Never merge, rebase or push
+  to `master`.
+- Branch to create: `feat/brand-new`, cut from `main`.
+- There is no guide yet. If a
+  `GUIDE.md` has appeared, read it first.
+
+## §1 Why this exists
+
+- The old guide was `docs/guide.md`.
+- Nothing in `docs/` changes.
+
+## §2 State
+
+- The trial merge of `origin/dev` was not pushed.
+- The reference checkout is `@OTHER@` (read-only);
+  its `feat/other-only` branch holds `@O1@`.
+- helperlib's `feat/other-only` branch is the pin.
+- helperlib ships `lib/other_only.py`.
+- helperlib ships `lib/not_there.py`.
+- The shape is a ring @PAIRS@.
+- Verify with `bash src/app.py --check`.
+- Run `bash src/missing_tool.sh` first.
+- The page mocks `src/web.createThing`.
+- There are flat test files (no `tests/unit/` package).
+- There are flat modules (no `src/web/` package).
+- `cache/` is gitignored.
+- Scratch goes in the untracked `scratch/` directory.
+- Helpers sit under `web/`.
+- `build-out/report.txt` holds the last run.
+- The page imports `@/web/helpers.js`.
+- The build copies `src/web/.` in.
+- The fixture `tests/fixtures/ref.json` is the input.
+- `src/web/missing.js` renders the header.
+- `feat/ghost` holds the spike.
+- `master` holds the release.
+
+## §5 Step 0
+
+- Read `dev:src/web/helpers.js` for the old helper.
+
+## §7 Tasks
+
+1. Fixtures: copy the reference file to
+   `tests/fixtures/ref.json` and test against it.
+2. Sync, push, update the PR.
+
+## §9 Known traps
+
+- The module is not under a `logs/` directory.

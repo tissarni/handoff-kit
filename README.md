@@ -14,8 +14,9 @@ kit's own word for that repo.
   (`flock`, `setsid`), procps (`pgrep`), awk and sed.
 - An agent CLI: `claude` by default, or `hermes` or `devin`.
 - `gh` for a GitHub origin, or `glab` for a GitLab one.
-- Optionally, a systemd user session (`systemctl`, `systemd-escape`) for the watchdog, and
-  `curl` with `notify.env` for messages.
+- Optionally, for the watchdog, a systemd user session (`systemctl`, `systemd-escape`) on
+  Linux, or a GUI login session (`launchctl`) on macOS; and `curl` with `notify.env` for
+  messages.
 
 ## The vault it works with
 
@@ -174,16 +175,25 @@ the vault only while the kit sits inside it.
 
 ## Watchdog
 
-The timer fires 5 minutes after boot, then every 30 minutes, and runs
+On Linux the timer fires 5 minutes after boot, then every 30 minutes, and runs
 `handoff-orchestrate tick <plan>`. `start` and `resume` arm a plan's timer, and the driver
-disables it after the last phase. Without a systemd user session, run
-`/loop 30m handoff-orchestrate tick <plan>` in an agent session instead.
+disables it after the last phase.
+
+On macOS, with no systemd and a GUI login session, `start` and `resume` fill
+`launchd/handoff-watchdog.plist` in for the plan, write it to
+`~/Library/LaunchAgents/<label>.plist` and load it with `launchctl bootstrap`. The label is
+`handoff-watchdog.<n>`, `<n>` being the checksum (`cksum`) of the plan's real path; the log
+is `~/Library/Logs/<label>.log`. The driver retires the agent after the last phase, and a
+tick retires it too when it finds the plan finished. The agent is inert until the
+orchestrator itself runs on macOS.
+
+Without either, run `/loop 30m handoff-orchestrate tick <plan>` in an agent session instead.
 
 ## Tests
 
 - `bash tests/run.sh [case…]` runs every case, or the cases named.
 - Each case has its own sandbox, with its own `HOME` and `PATH` and fake `claude`, `gh`,
-  `glab`, `curl` and `systemctl`.
+  `glab`, `curl`, `systemctl` and `launchctl`.
 - `HANDOFF_SCRIPTS_DIR=<dir>` runs the cases against the scripts in `<dir>`: the launcher,
   the orchestrator, `brief-check.sh`, `handoff-usage.py` and `install.sh`.
 - CI runs the suite on every push and pull request, on `ubuntu-latest` (required) and on
@@ -197,6 +207,7 @@ disables it after the last phase. Without a systemd user session, run
 - `brief-check.sh`: checks a brief's claims against its repo.
 - `handoff-usage.py`: prices a Claude Code session transcript from its usage rows.
 - `install.sh`: installs the kit for the current user.
+- `launchd/`: the macOS watchdog agent's plist template.
 - `hooks/`: the git hooks the launcher sets for a stage session.
 - `guards/`: a guard that refuses background waits in headless stages.
 - `skills/`: the repo-side skills `handoff-review` and `handoff-close`.

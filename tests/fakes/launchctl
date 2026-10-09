@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Fake launchctl: logs its argv to launchctl.log (never calls.log). Every call exits 1
+# unless $FAKE_STATE_DIR/launchctl.on exists; then it models a login session with agents
+# tracked as launchctl.loaded.<label> files.
+set -uo pipefail
+printf '%s\n' "$*" >>"$FAKE_STATE_DIR/launchctl.log"
+[ -f "$FAKE_STATE_DIR/launchctl.on" ] || exit 1
+case "${1:-}" in
+  print)
+    case "${2:-}" in
+      gui/*/*) [ -f "$FAKE_STATE_DIR/launchctl.loaded.${2#gui/*/}" ] ;;
+      gui/*) exit 0 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  bootstrap)
+    name="$(basename "${3:-}")"
+    : >"$FAKE_STATE_DIR/launchctl.loaded.${name%.plist}"
+    ;;
+  bootout)
+    label="${2#gui/*/}"
+    if [ -f "$HOME/Library/LaunchAgents/$label.plist" ]; then
+      echo "plist=present" >>"$FAKE_STATE_DIR/launchctl.log"
+    else
+      echo "plist=absent" >>"$FAKE_STATE_DIR/launchctl.log"
+    fi
+    rm -f "$FAKE_STATE_DIR/launchctl.loaded.$label"
+    ;;
+  *) exit 1 ;;
+esac

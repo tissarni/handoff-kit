@@ -50,7 +50,7 @@ sandbox_cleanup() {
 
 write_fakes() {
   mkdir -p "$SANDBOX/bin"
-  for f in claude systemctl curl gh glab; do
+  for f in claude systemctl launchctl curl gh glab; do
     cp "$FAKES_DIR/$f" "$SANDBOX/bin/$f"
     chmod +x "$SANDBOX/bin/$f"
   done
@@ -98,6 +98,7 @@ EOF
   [ -d "$REPO_ROOT/guards" ] && cp -r "$REPO_ROOT/guards" "$SANDBOX/kit/guards"
   cp -r "$REPO_ROOT/skills" "$SANDBOX/kit/skills"
   cp -r "$REPO_ROOT/systemd" "$SANDBOX/kit/systemd"
+  cp -r "$REPO_ROOT/launchd" "$SANDBOX/kit/launchd"
   [ -d "$REPO_ROOT/hermes" ] && cp -r "$REPO_ROOT/hermes" "$SANDBOX/kit/hermes"
   if [ -f "$src/install.sh" ]; then cp "$src/install.sh" "$SANDBOX/kit/install.sh"; else cp "$REPO_ROOT/install.sh" "$SANDBOX/kit/install.sh"; fi
   cp "$REPO_ROOT/tests/fixtures/handoff-defaults.yml" \

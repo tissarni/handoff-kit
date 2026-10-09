@@ -1,7 +1,7 @@
 # AGENTS.md — the handoff kit
 
 This directory is the handoff kit: `handoff-launch.sh`, `handoff-orchestrate.sh` and
-`brief-check.sh`, their hooks, guard, repo-side skills, watchdog units, `install.sh` and
+`brief-check.sh`, their hooks, guard, repo-side skills, watchdog units, the launchd template, `install.sh` and
 tests. It runs agent sessions from written briefs and plans. It works with a vault: the
 notes repo that holds those briefs and plans, named by `~/.config/handoff/config.env`.
 "Vault" is the kit's own word for that repo, and `README.md` says what the kit needs from it.
@@ -9,7 +9,7 @@ notes repo that holds those briefs and plans, named by `~/.config/handoff/config
 ## Checks
 
 - `bash tests/run.sh 2>&1 | tail -n 40` runs every case in a sandbox (its own `HOME` and
-  `PATH`, fake `claude`, `gh`, `glab`, `curl` and `systemctl`). It takes about four minutes
+  `PATH`, fake `claude`, `gh`, `glab`, `curl`, `systemctl` and `launchctl`). It takes about four minutes
   and ends `N passed, 0 failed`. `bash tests/run.sh <case>…` runs some of them.
 - `bash -n` on every script you touch.
 - A change of behaviour comes with a case that fails without it. Show that it does: copy
@@ -18,8 +18,8 @@ notes repo that holds those briefs and plans, named by `~/.config/handoff/config
 ## Never
 
 - Never run `tests/probe-headless-guard.sh`: it starts real, paid agent sessions.
-- Never run `install.sh`, or a `systemctl --user` command that changes anything, against
-  your real `HOME`. The cases run both inside the sandbox.
+- Never run `install.sh`, a `systemctl --user` command that changes anything, or a
+  `launchctl` command, against your real `HOME`. The cases run both inside the sandbox.
 - Never read `~/.config/handoff/notify.env`: it holds a live bot token. Never source it or
   `config.env`; the scripts read them one key at a time.
 - Never read `~/.hermes/.env` or a profile's `.env` or `auth.json`: they hold live keys.
@@ -32,6 +32,13 @@ notes repo that holds those briefs and plans, named by `~/.config/handoff/config
   only writer.** Two writers drift apart: one that writes a unit only when it is missing
   never updates it. Keep the unit names and the instance string: the timers already
   enabled on a host are named by them.
+- **`launchd/` holds the only definition of the watchdog agent.** launchd has no template
+  units, so the orchestrator fills the template in per plan when it arms one; nothing else
+  writes a plist. Keep the label recipe (`handoff-watchdog.` and the checksum of the plan's
+  real path): the agents already loaded on a host are named by it.
+- **Every case runs with the fake `launchctl` and `systemctl` first on `PATH`.** On macOS
+  the sandbox `PATH` reaches the real `/bin/launchctl`, and a case that reached it would
+  load an agent into the developer's own session.
 - **No path outside this directory**, except the vault that `config.env` names. The kit
   must work from a plain copy of this directory.
 - **No names of people, hosts, clients or other projects, no decision-record numbers and no

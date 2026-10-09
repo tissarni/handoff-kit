@@ -10,8 +10,8 @@
 #       at the end of the phase writes the phase summary and notifies. Nothing runs in
 #       parallel: brief k+1's review starts only after brief k is closed.
 #   handoff-orchestrate tick   <plan>
-#       Watchdog pass (systemd timer, 30 min; armed by start/resume, retired when the
-#       last phase is done). Deterministic bash, never advances state: driver alive? current stage's
+#       Watchdog pass (systemd timer or macOS launchd agent, 30 min; armed by start/resume,
+#       retired when the last phase is done). Deterministic bash, never advances state: driver alive? current stage's
 #       heartbeat and budget? kill the stalled stage (the driver then retries or breaks);
 #       refresh the status header. A tick with nothing to report touches <plan>.tick and
 #       exits 0.
@@ -356,31 +356,106 @@ kit_check() {
   checkout_remedy
   return 1
 }
-# The watchdog timer is armed per plan by start/resume (arm_watchdog) and is only
-# needed while a phase can still run. When the LAST phase completes the driver retires it
-# itself — the first real plan (2026-09-22) left its timer ticking on a finished plan and
-# handed the operator a systemd-escape puzzle. Intermediate phases keep it: the next phase's
-# start reuses it. Silent when systemd or the unit is absent.
+# The watchdog is armed per plan by start/resume (arm_watchdog): a systemd timer, or a
+# launchd agent on macOS. It is only needed while a phase can still run. When the LAST
+# phase completes the driver retires it itself — the first real plan (2026-09-22) left its
+# timer ticking on a finished plan and handed the operator a systemd-escape puzzle.
+# Intermediate phases keep it: the next phase's start reuses it. Silent when there is
+# nothing to retire, and returns 0 on every path (callers run it last in an && list).
 retire_watchdog() {
-  command -v systemctl >/dev/null 2>&1 || return 0
-  local unit; unit="handoff-watchdog@$(systemd-escape "$PLAN_ARG").timer"
-  systemctl --user is-enabled "$unit" >/dev/null 2>&1 || systemctl --user is-active "$unit" >/dev/null 2>&1 || return 0
-  if systemctl --user disable --now "$unit" >/dev/null 2>&1; then
-    log_event "WATCHDOG retired $unit — last phase done"
-    echo "watchdog timer retired: $unit"
+  local unit label plist
+  if command -v systemctl >/dev/null 2>&1 && command -v systemd-escape >/dev/null 2>&1; then
+    unit="handoff-watchdog@$(systemd-escape "$PLAN_ARG").timer"
+    if systemctl --user is-enabled "$unit" >/dev/null 2>&1 || systemctl --user is-active "$unit" >/dev/null 2>&1; then
+      if systemctl --user disable --now "$unit" >/dev/null 2>&1; then
+        log_event "WATCHDOG retired $unit — last phase done"
+        echo "watchdog timer retired: $unit"
+      else
+        log_event "WATCHDOG could not retire $unit — disable it by hand: systemctl --user disable --now '$unit'"
+      fi
+      return 0
+    fi
+  fi
+  command -v launchctl >/dev/null 2>&1 || return 0
+  label="$(launchd_label)" || return 0
+  plist="$HOME/Library/LaunchAgents/$label.plist"
+  if [ -f "$plist" ] || launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
+    log_event "WATCHDOG retired $label — last phase done"
+    # The plist goes first: bootout can stop this very tick, and with the file gone
+    # nothing loads the agent again at the next login.
+    rm -f "$plist" || true
+    echo "watchdog agent retired: $label"
+    launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+# One launchd agent per plan: launchd has no template units and a plan path holds
+# slashes, so the label carries a checksum of the plan's real path.
+launchd_label() {
+  local n
+  n="$(printf '%s' "$(readlink -f "$PLAN")" | cksum | cut -d' ' -f1)" || return 1
+  [ -n "$n" ] || return 1
+  printf 'handoff-watchdog.%s' "$n"
+}
+
+# The launchd branch of arm_watchdog. The kit's launchd/ template is the agent's only
+# definition; it is filled in here, per plan, because launchd has no template units.
+arm_watchdog_launchd() {
+  local uid label dir plist tpl tmp
+  uid="$(id -u)"
+  label="$(launchd_label)" || label=""
+  if [ -z "$label" ]; then
+    echo "NOTE: could not compute the launchd label — no watchdog; fallback: /loop 30m handoff-orchestrate tick $PLAN_ARG"
+    return 0
+  fi
+  dir="$HOME/Library/LaunchAgents"; plist="$dir/$label.plist"; tpl="$KIT/launchd/handoff-watchdog.plist"
+  if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
+    echo "watchdog agent: $label (already active)"
+    return 0
+  fi
+  if [ ! -f "$tpl" ]; then
+    echo "NOTE: no launchd template $tpl — no watchdog; fallback: /loop 30m handoff-orchestrate tick $PLAN_ARG"
+    return 0
+  fi
+  tmp="$plist.tmp.$$"
+  if ! { mkdir -p "$dir" "$HOME/Library/Logs" && python3 - "$tpl" "$tmp" "$label" "$HOME" "$PLAN_ARG" >/dev/null 2>&1 <<'PY' && mv -f "$tmp" "$plist"; } then
+import plistlib, sys
+from xml.sax.saxutils import escape
+tpl, out, label, home, plan = sys.argv[1:6]
+text = open(tpl, encoding='utf-8').read()
+for k, v in (('@LABEL@', label), ('@HOME@', home), ('@PLAN@', plan)):
+    text = text.replace(k, escape(v))
+plistlib.loads(text.encode('utf-8'))
+open(out, 'w', encoding='utf-8').write(text)
+PY
+    rm -f "$tmp" 2>/dev/null || true
+    log_event "WATCHDOG could not arm $label — could not write $plist from $tpl"
+    echo "WARNING: could not arm $label — could not write $plist"
+    return 0
+  fi
+  if launchctl bootstrap "gui/$uid" "$plist" >/dev/null 2>&1; then
+    log_event "WATCHDOG armed $label"
+    echo "watchdog agent: $label (armed)"
   else
-    log_event "WATCHDOG could not retire $unit — disable it by hand: systemctl --user disable --now '$unit'"
+    log_event "WATCHDOG could not arm $label — load it by hand: launchctl bootstrap gui/$uid '$plist'"
+    echo "WARNING: could not arm $label — launchctl bootstrap gui/$uid '$plist'"
   fi
 }
 
 # start/resume arm the plan's watchdog themselves: a start run straight from the printed
 # command (2026-09-23) otherwise left two drivers with no timer watching them. The two
 # template units are the kit's systemd/ files, written by its install.sh and never here;
-# without them, or without systemd, this prints a note and the fallback, never a failure.
+# without them, or without systemd or launchd, this prints a note and the fallback, never
+# a failure.
 arm_watchdog() {
   local dir="$HOME/.config/systemd/user" unit
   if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user show-environment >/dev/null 2>&1; then
-    echo "NOTE: no systemd user session — no watchdog timer; fallback: /loop 30m handoff-orchestrate tick $PLAN_ARG"
+    if command -v launchctl >/dev/null 2>&1 && launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+      arm_watchdog_launchd
+      return 0
+    fi
+    echo "NOTE: no systemd user session and no launchd login session — no watchdog; fallback: /loop 30m handoff-orchestrate tick $PLAN_ARG"
     return 0
   fi
   if [ ! -f "$dir/handoff-watchdog@.service" ] || [ ! -f "$dir/handoff-watchdog@.timer" ]; then

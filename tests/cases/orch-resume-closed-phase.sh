@@ -53,7 +53,7 @@ printf '%s\n' "$OUT" | /usr/bin/grep -qF 'every brief of phase 1 is already clos
   || fail "planned: expected 'every brief of phase 1 is already closed' in output:
 $OUT"
 assert_no_file "${PLAN2%.md}.status.md"
-/usr/bin/sed -i 's/^orchestration: planned$/orchestration: paused/' "$PLAN2"
+sed -i 's/^orchestration: planned$/orchestration: paused/' "$PLAN2"
 OUT="$(orch resume "$PLAN2" --backend claude 2>&1)"; RC=$?
 [ "$RC" -eq 0 ] || fail "paused: expected exit 0, got $RC. Output:
 $OUT"

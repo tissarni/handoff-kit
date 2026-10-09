@@ -9,9 +9,12 @@ kit's own word for that repo.
 
 ## What it needs
 
-- Linux, with bash, git and python3 (standard library only).
-- GNU coreutils (`readlink -f`, `timeout`, `mktemp`, `date -d`, `stat -c`), util-linux
-  (`flock`, `setsid`), procps (`pgrep`), awk and sed.
+- Linux, or macOS with Homebrew and `brew install bash coreutils findutils gnu-sed grep`:
+  each script puts the GNU tools first on its own `PATH` and runs under Homebrew's bash.
+- bash 4 or newer, git and python3 (standard library only).
+- GNU coreutils, findutils, sed and grep (`readlink -f`, `timeout`, `mktemp`, `date -d`,
+  `stat -c`), awk and `ps`; util-linux's `flock` and `setsid` where present, python3
+  standing in otherwise.
 - An agent CLI: `claude` by default, or `hermes` or `devin`.
 - `gh` for a GitHub origin, or `glab` for a GitLab one.
 - Optionally, for the watchdog, a systemd user session (`systemctl`, `systemd-escape`) on
@@ -197,7 +200,8 @@ Without either, run `/loop 30m handoff-orchestrate tick <plan>` in an agent sess
 - `HANDOFF_SCRIPTS_DIR=<dir>` runs the cases against the scripts in `<dir>`: the launcher,
   the orchestrator, `brief-check.sh`, `handoff-usage.py` and `install.sh`.
 - CI runs the suite on every push and pull request, on `ubuntu-latest` (required) and on
-  `macos-latest` (advisory: that job may fail without failing the run).
+  `macos-latest` (advisory: that job may fail without failing the run). The macOS job installs bash and
+  the GNU tools first.
 - Never run `tests/probe-headless-guard.sh`: it starts real, paid sessions.
 
 ## Layout

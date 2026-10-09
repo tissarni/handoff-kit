@@ -78,6 +78,23 @@
 #                                   applies: a plan never takes a checkout another
 #                                   running, paused or broken plan holds.
 
+# >>> portable preamble
+# Identical in every script that carries it; tests/cases/portable-preamble.sh fails when the
+# copies differ. On macOS it puts Homebrew's GNU tools first on PATH and runs the script under
+# Homebrew's bash, since the code after it needs bash 4 and GNU options. Elsewhere it does nothing.
+case "${OSTYPE:-}" in darwin*)
+  for _hb in /opt/homebrew /usr/local; do
+    [ -x "$_hb/bin/bash" ] || continue
+    for _g in grep gnu-sed findutils coreutils; do
+      case ":$PATH:" in *":$_hb/opt/$_g/libexec/gnubin:"*) ;; *) PATH="$_hb/opt/$_g/libexec/gnubin:$PATH" ;; esac
+    done
+    export PATH
+    [ "${BASH_VERSINFO[0]}" -ge 4 ] || exec "$_hb/bin/bash" "$0" ${1+"$@"}
+    break
+  done
+  [ "${BASH_VERSINFO[0]}" -ge 4 ] || { printf '%s: needs bash 4 or newer and the GNU tools: brew install bash coreutils findutils gnu-sed grep\n' "$0" >&2; exit 1; } ;;
+esac
+# <<< portable preamble
 set -euo pipefail
 
 KIT="${HANDOFF_KIT:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)}"
@@ -520,7 +537,7 @@ PY
 # ---------------------------------------------------------------- pre-flight
 # Before EVERY launch. Prints "preflight:<check> — <detail>" and returns 1 on failure;
 # the caller decides between die2 (start/resume) and break_phase (driver).
-disk_min_gb() { awk -F: '/^\s*disk-min-free-gb:/{gsub(/[^0-9]/,"",$2); print $2; exit}' "$DEFAULTS" 2>/dev/null || true; }
+disk_min_gb() { awk -F: '/^[[:space:]]*disk-min-free-gb:/{gsub(/[^0-9]/,"",$2); print $2; exit}' "$DEFAULTS" 2>/dev/null || true; }
 backend_bin() {
   case "$BACKEND" in
     claude) printf '%s' "${CLAUDE_BIN:-$(command -v claude 2>/dev/null || ls "$HOME/.local/bin/claude" 2>/dev/null || true)}" ;;
@@ -556,7 +573,7 @@ stage_scan() {
     if [ -n "$other_real" ] && [ "$other_real" = "$self_real" ]; then
       printf 'preflight:launcher — a handoff-launch.sh stage is already running on this checkout: %s\n' "$rest"; return 1
     fi
-  done < <(pgrep -af "handoff-launch(\.sh)? (loop|review|run|close|revise|debrief|resume|lesson) " 2>/dev/null || true)
+  done < <(ps -ww -A -o pid=,args= 2>/dev/null | /usr/bin/grep -E "handoff-launch(\.sh)? (loop|review|run|close|revise|debrief|resume|lesson) " || true)
   return 0
 }
 
@@ -634,8 +651,8 @@ write_status() {  # $1 = verdict line, $2 = optional extra markdown appended aft
       i=$((i+1)); st="$(read_brief_state "$b" 2>/dev/null || echo '?')"
       printf '| %s | %s | %s | %s | %s | %s |\n' "$i" "$(basename "$b" .md)" "$st" \
         "$([ "$st" = closed ] && echo '—' || stage_of_state "$st")" \
-        "$(/usr/bin/grep -m1 -oE '^verdict:\s*\S+' "${b%.md}.review.md" 2>/dev/null | awk '{print $2}' || true)" \
-        "$(/usr/bin/grep -m1 -oE '^VERDICT:\s*\S+' "${b%.md}.close.md" 2>/dev/null | awk '{print $2}' || true)"
+        "$(/usr/bin/grep -m1 -oE '^verdict:[[:space:]]*[^[:space:]]+' "${b%.md}.review.md" 2>/dev/null | awk '{print $2}' || true)" \
+        "$(/usr/bin/grep -m1 -oE '^VERDICT:[[:space:]]*[^[:space:]]+' "${b%.md}.close.md" 2>/dev/null | awk '{print $2}' || true)"
     done
     [ -n "${2:-}" ] && printf '\n%s\n' "$2"
     printf '\n## Events (last 20)\n\n```\n'
@@ -747,6 +764,17 @@ stage_budget_s() {  # $1 = stage -> seconds or empty
 # SIGTERM the loop's process group, 60 s, then SIGKILL. The launcher's capture is a
 # mktemp file the launcher removes on exit; what survives is the driver's own capture of
 # the loop's output, which the driver renames <brief>.killed-<ts>.log.
+# Run "$@" as the leader of a new session, in this process: the caller's $! stays its pid,
+# which is also the process group the tick kills. python3 stands in where setsid is missing.
+in_new_session() {
+  if command -v setsid >/dev/null 2>&1; then exec setsid "$@"; fi
+  exec python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@"
+}
+# flock -n on fd 9. python3's flock takes the same lock, held until the shell closes fd 9.
+lock_fd9() {
+  if command -v flock >/dev/null 2>&1; then flock -n 9
+  else python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)' 2>/dev/null; fi
+}
 kill_group() {  # $1 = pgid
   kill -TERM -- "-$1" 2>/dev/null || kill -TERM "$1" 2>/dev/null || return 0
   local w=0; while kill -0 "$1" 2>/dev/null && [ "$w" -lt 60 ]; do sleep 1; w=$((w+1)); done
@@ -1089,7 +1117,7 @@ launch_driver() {
   mkdir -p "$driver_dir"
   cp "$KIT/handoff-launch.sh" "$driver_dir/handoff-launch.sh"
   cp "$KIT/handoff-orchestrate.sh" "$driver_dir/handoff-orchestrate.sh"
-  setsid env VAULT="$VAULT" HANDOFF_KIT="$KIT" HANDOFF_DEFAULTS="$HANDOFF_DEFAULTS" HANDOFF_PROJECTS="$HANDOFF_PROJECTS" HANDOFF_LAUNCHER="$driver_dir/handoff-launch.sh" \
+  in_new_session env VAULT="$VAULT" HANDOFF_KIT="$KIT" HANDOFF_DEFAULTS="$HANDOFF_DEFAULTS" HANDOFF_PROJECTS="$HANDOFF_PROJECTS" HANDOFF_LAUNCHER="$driver_dir/handoff-launch.sh" \
     bash "$driver_dir/handoff-orchestrate.sh" __driver "$PLAN_ARG" --backend "$BACKEND" "${MODEL_FLAGS[@]}" \
     >"$DRIVER_LOG" 2>&1 </dev/null &
   local dpid=$!
@@ -1104,7 +1132,7 @@ run_loop() {  # $1 = brief. Runs one loop in its own process group; sets LOOP_RC
   cap="$(mktemp)"
   set +e
   # HANDOFF_BASE: a pre-existing failure is proven against the plan's base, not a guess
-  HANDOFF_BASE="$BASE_BRANCH" setsid bash "$LAUNCHER" loop "$1" --gate auto --backend "$BACKEND" "${MODEL_FLAGS[@]}" >"$cap" 2>&1 </dev/null &
+  HANDOFF_BASE="$BASE_BRANCH" in_new_session bash "$LAUNCHER" loop "$1" --gate auto --backend "$BACKEND" "${MODEL_FLAGS[@]}" >"$cap" 2>&1 </dev/null &
   pid=$!
   write_stage "$1" "$pid"
   wait "$pid"; LOOP_RC=$?
@@ -1358,7 +1386,7 @@ tick() {
     echo "tick: no driver for $PLAN_ARG (orchestration: $PLAN_ORCH) — $(verdict)"; exit 0
   fi
   exec 9>"$LOCK.tick"
-  flock -n 9 || { echo "tick: another tick holds the lock"; exit 0; }
+  lock_fd9 || { echo "tick: another tick holds the lock"; exit 0; }
   local pid; pid="$(lock_pid)"
   if ! kill -0 "$pid" 2>/dev/null; then
     # A driver that exited on its own path (break, done, stop) released the lock. A lock

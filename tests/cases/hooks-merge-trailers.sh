@@ -57,6 +57,17 @@ G commit -q -m "feat: two" -m "Co-Authored-By: Someone <s@example.com>" || fail 
 expect_trailers "$R" "normal commit"
 G log -1 --format=%B | /usr/bin/grep -qi 'Co-Authored-By' && fail "Co-Authored-By survived prepare-commit-msg"
 
+# Attribution stripping keeps body lines, even one holding "co-authored-by:" mid-line.
+echo three >>"$R/f"; G add f
+G commit -q -m "feat: three" -m "A body line." -m "see the co-authored-by: note in the body" \
+  -m "co-authored-by: Lower <l@example.com>" -m "  Co-Authored-By: Indented <i@example.com>" \
+  -m "Generated with [Claude Code]" || fail "attribution commit refused"
+expect_trailers "$R" "attribution commit"
+MSGB="$(G log -1 --format=%B)"
+printf '%s\n' "$MSGB" | /usr/bin/grep -qxF 'A body line.' || fail "body line lost"
+printf '%s\n' "$MSGB" | /usr/bin/grep -qF 'see the co-authored-by: note in the body' || fail "mid-line co-authored-by body line lost"
+printf '%s\n' "$MSGB" | /usr/bin/grep -qiE 'Lower|Indented|Generated with' && fail "attribution survived: $MSGB"
+
 # commit-msg alone: what it sees when prepare-commit-msg was bypassed.
 (cd "$R" && printf 'subject\n\nbody\n' >"$SANDBOX/m1" && ! "$HOOKS_DIR/commit-msg" "$SANDBOX/m1" 2>/dev/null) \
   || fail "commit-msg accepted a message without trailers"

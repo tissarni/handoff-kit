@@ -4,6 +4,10 @@ on:
   pull_request:
 permissions:
   contents: read
+# A macOS job can take 60 minutes and GitHub Free runs 5 at a time: cancel a superseded run.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   linux:
     runs-on: ubuntu-latest
@@ -18,4 +22,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - name: Install bash and the GNU tools
+        run: brew install bash coreutils findutils gnu-sed grep
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
       - run: bash tests/run.sh

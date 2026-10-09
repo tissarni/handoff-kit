@@ -7,7 +7,8 @@ set -eu
 MSG="$1"
 if [ -n "${HANDOFF_HARNESS:-}" ]; then
   # Agents copy attribution from git history; strip whatever came along.
-  sed -i -E '/^[[:space:]]*Co-Authored-By:/Id; /Generated with \[Claude Code\]/d' "$MSG"
+  awk 'tolower($0) ~ /^[[:space:]]*co-authored-by:/ || index($0, "Generated with [Claude Code]") { next } { print }' "$MSG" >"$MSG.handoff-tmp" \
+    && mv -f "$MSG.handoff-tmp" "$MSG"
   # `git merge` writes MERGE_MSG with no final newline; interpret-trailers would then glue
   # the trailers onto the subject paragraph, where no parser (commit-msg's included) sees them.
   [ -s "$MSG" ] && [ -n "$(tail -c1 "$MSG")" ] && printf '\n' >>"$MSG"

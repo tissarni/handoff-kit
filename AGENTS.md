@@ -48,9 +48,20 @@ notes repo that holds those briefs and plans, named by `~/.config/handoff/config
   titles and descriptions, review and issue comments, and commit messages follow the names
   rule above. No hook reads a text typed on GitHub, and an edited text keeps its earlier
   version in its edit history.
-- **Call `/usr/bin/grep`, never bare `grep`.** On some hosts `grep` resolves to another tool
-  or dialect, and a pattern that works in one fails in the other. Some older lines still use
-  the bare name.
+- **Call `/usr/bin/grep`, never bare `grep`, and write POSIX patterns in grep, sed and
+  awk** (a class such as `[:space:]` in a bracket expression, never `\s`, `\S` or `\w`). On
+  some hosts `grep` resolves to another tool or dialect, and a pattern that works in one
+  fails in the other: macOS's `/usr/bin/grep` is BSD grep whatever `PATH` holds, and mawk
+  reads `\s` as `s`. The scripts and hooks have no bare `grep` left; some older test lines
+  still do.
+- **The five entry points carry the same preamble directly above their first `set` line.**
+  It puts Homebrew's GNU tools first on `PATH` and runs the script under Homebrew's bash on
+  macOS. A new entry point copies it, and `tests/cases/portable-preamble.sh` fails when
+  copies differ.
+- **The hooks stay bash 3.2 and POSIX, with no preamble.** git runs them under whatever
+  `bash` its `PATH` holds, on every commit and push of a stage: no `mapfile`, case
+  conversion or `sed -i`, and only `/usr/bin/grep`, since macOS's `/usr/bin/grep` and `sed`
+  are BSD tools.
 - **A text change to `skills/` goes in a change of its own.** `install.sh` copies those
   skills to user level, so every repo session on the host runs the new text right after
   the next install.

@@ -60,6 +60,7 @@ bash install.sh --vault <dir> --defaults <path relative to the vault> --projects
 ```
 
 for example `--vault ~/notes --defaults templates/handoff-defaults.yml --projects projects`.
+Add `--hermes-profiles` to also seed the hermes stage profiles (see `## Hermes profiles`).
 
 It writes, all under `$HOME`:
 
@@ -68,7 +69,9 @@ It writes, all under `$HOME`:
 - `~/.local/bin/handoff-launch`, `handoff-orchestrate` and `brief-check`: symlinks into
   this kit;
 - `~/.claude/skills/<name>/`: each skill under `skills/`, replaced whole;
-- `~/.config/systemd/user/handoff-watchdog@.service` and `.timer`, copied from `systemd/`.
+- `~/.config/systemd/user/handoff-watchdog@.service` and `.timer`, copied from `systemd/`;
+- `~/.hermes/profiles/review`, `run` and `close`: only with `--hermes-profiles`, each one
+  only when it does not exist yet.
 
 A flag left out keeps the value `config.env` already has. The environment's `VAULT`,
 `HANDOFF_DEFAULTS` and `HANDOFF_PROJECTS` are ignored by the installer. Run it again after
@@ -83,6 +86,32 @@ and `resume` arm each plan's timer. It exits 1 on a refusal and 2 on a bad flag.
   wins and quotes are stripped.
 - `~/.config/handoff/notify.env` holds `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, used by
   a plan with `notify: telegram`.
+
+## Hermes profiles
+
+The launcher can run a stage on hermes (`--backend hermes`). Hermes keeps one profile per
+role, a directory under `~/.hermes/profiles/` with a `SOUL.md` (standing instructions) and
+a `config.yaml` (which names the model). The stage-to-profile map:
+
+- `run` and `resume` use the `run` profile, `review` uses `review`, `close` uses `close`;
+- every other stage (revise, debrief, lesson) uses `default`, your own hermes setup, which
+  must provide the skills those stages call.
+
+A stage's model is the profile's `model.default`, unless `--model` is passed. A run or
+resume on a model ending `:free` is refused, unless `HANDOFF_ALLOW_FREE_RUN=1`.
+
+The kit ships a generic `SOUL.md` for each of the three profiles, under
+`hermes/profiles/`. The review one holds the whole review: a hermes review gets the bare
+brief, with no wrapper and no skill, so the procedure and the output block that the next
+stage parses reach the session only through that SOUL. The run one defers to the report
+format in the run prompt. `bash install.sh --hermes-profiles` creates each missing profile
+from them, with the `model:` block of `~/.hermes/config.yaml` copied into its `config.yaml`
+(mode 600). A profile that already exists, whatever it holds, is kept and never written to.
+Without the flag, nothing under `~/.hermes` is read or written.
+
+The flag never writes credentials: give each new profile the `.env` or `auth.json` its
+provider needs. Hermes has no read-only mode, so the review and close profiles are
+read-only by their SOUL alone.
 
 ## Commands
 
@@ -155,7 +184,8 @@ disables it after the last phase. Without a systemd user session, run
 - `bash tests/run.sh [case…]` runs every case, or the cases named.
 - Each case has its own sandbox, with its own `HOME` and `PATH` and fake `claude`, `gh`,
   `glab`, `curl` and `systemctl`.
-- `HANDOFF_SCRIPTS_DIR=<dir>` runs the cases against the scripts in `<dir>`.
+- `HANDOFF_SCRIPTS_DIR=<dir>` runs the cases against the scripts in `<dir>`: the launcher,
+  the orchestrator, `brief-check.sh`, `handoff-usage.py` and `install.sh`.
 - CI runs the suite on every push and pull request, on `ubuntu-latest` (required) and on
   `macos-latest` (advisory: that job may fail without failing the run).
 - Never run `tests/probe-headless-guard.sh`: it starts real, paid sessions.
@@ -170,6 +200,7 @@ disables it after the last phase. Without a systemd user session, run
 - `hooks/`: the git hooks the launcher sets for a stage session.
 - `guards/`: a guard that refuses background waits in headless stages.
 - `skills/`: the repo-side skills `handoff-review` and `handoff-close`.
+- `hermes/`: the generic hermes profile seeds, `profiles/<name>/SOUL.md`.
 - `systemd/`: the watchdog service and timer units.
 - `tests/`: the suite, its fakes and fixtures.
 - `.github/workflows/tests.yml`: the CI workflow that runs the suite.

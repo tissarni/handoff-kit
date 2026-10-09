@@ -22,6 +22,7 @@ notes repo that holds those briefs and plans, named by `~/.config/handoff/config
   your real `HOME`. The cases run both inside the sandbox.
 - Never read `~/.config/handoff/notify.env`: it holds a live bot token. Never source it or
   `config.env`; the scripts read them one key at a time.
+- Never read `~/.hermes/.env` or a profile's `.env` or `auth.json`: they hold live keys.
 
 ## Rules, and why
 
@@ -46,6 +47,12 @@ notes repo that holds those briefs and plans, named by `~/.config/handoff/config
 - **A text change to `skills/` goes in a change of its own.** `install.sh` copies those
   skills to user level, so every repo session on the host runs the new text right after
   the next install.
+- **The review SOUL carries the review skill's output block byte for byte.** A change to
+  the block changes `skills/handoff-review/SKILL.md` and `hermes/profiles/review/SOUL.md`
+  in one commit (an exception to the rule above: the SOUL's copy counts as part of that
+  skills change), and `tests/cases/install-hermes-profiles.sh` compares them. A hermes
+  review gets the bare brief, so that SOUL is the only place the block's format reaches
+  the session, and the next stage parses the block.
 - **Keep every Claude stage isolated from the operator's connectors and user-scope plugins.**
   Unattended stages run with no one approving a write, so a connected service or a plugin
   the operator set up for their own work must not be reachable from them, and their

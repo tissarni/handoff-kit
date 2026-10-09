@@ -98,7 +98,8 @@ EOF
   [ -d "$REPO_ROOT/guards" ] && cp -r "$REPO_ROOT/guards" "$SANDBOX/kit/guards"
   cp -r "$REPO_ROOT/skills" "$SANDBOX/kit/skills"
   cp -r "$REPO_ROOT/systemd" "$SANDBOX/kit/systemd"
-  cp "$REPO_ROOT/install.sh" "$SANDBOX/kit/install.sh"
+  [ -d "$REPO_ROOT/hermes" ] && cp -r "$REPO_ROOT/hermes" "$SANDBOX/kit/hermes"
+  if [ -f "$src/install.sh" ]; then cp "$src/install.sh" "$SANDBOX/kit/install.sh"; else cp "$REPO_ROOT/install.sh" "$SANDBOX/kit/install.sh"; fi
   cp "$REPO_ROOT/tests/fixtures/handoff-defaults.yml" \
      "$SANDBOX/vault/02-projects/_templates/handoff-defaults.yml"
   python3 - "$SANDBOX/vault/02-projects/_templates/handoff-defaults.yml" <<'PY'

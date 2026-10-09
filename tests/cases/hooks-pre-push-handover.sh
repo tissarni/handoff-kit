@@ -55,7 +55,7 @@ install_own 0
 G branch feat2
 out="$(G push origin b2 feat2 2>&1)" || fail "push of two branches failed: $out"
 want="$(printf 'refs/heads/b2 %s refs/heads/b2 %s\nrefs/heads/feat2 %s refs/heads/feat2 %s\n' "$(G rev-parse b2)" "$ZEROS" "$(G rev-parse feat2)" "$ZEROS" | sort)"
-[ "$(wc -l <"$CAP/stdin")" = 2 ] || fail "own hook did not get two lines: $(cat "$CAP/stdin")"
+[ "$(wc -l <"$CAP/stdin")" -eq 2 ] || fail "own hook did not get two lines: $(cat "$CAP/stdin")"
 [ "$(sort "$CAP/stdin")" = "$want" ] || fail "own hook stdin for two branches: $(cat "$CAP/stdin")"
 
 # A shared branch: refused, named, and the own hook never runs.

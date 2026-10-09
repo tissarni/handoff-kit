@@ -47,7 +47,7 @@ expect_trailers() {   # $1 = repo dir, $2 = what
 
 for d in "$R" "$SANDBOX/wt"; do
   out="$(git -C "$d" merge dev 2>&1)" || fail "merge in $d did not commit: $out"
-  [ "$(git -C "$d" rev-list --parents -1 HEAD | wc -w)" = 3 ] || fail "HEAD in $d is not a merge commit"
+  [ "$(git -C "$d" rev-list --parents -1 HEAD | wc -w)" -eq 3 ] || fail "HEAD in $d is not a merge commit"
   [ "$(git -C "$d" log -1 --format=%s)" = "Merge branch 'dev' into $(git -C "$d" branch --show-current)" ] || fail "merge subject changed in $d"
   expect_trailers "$d" "merge in $d"
 done

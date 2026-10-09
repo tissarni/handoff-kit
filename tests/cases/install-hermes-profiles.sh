@@ -24,7 +24,7 @@ block() { sed -n '/^=== HANDOFF REVIEW ===$/,/^=== END HANDOFF REVIEW ===$/p' "$
 block "$KIT/skills/handoff-review/SKILL.md" >"$SANDBOX/b1"
 block "$KIT/hermes/profiles/review/SOUL.md" >"$SANDBOX/b2"
 cmp -s "$SANDBOX/b1" "$SANDBOX/b2" || fail "step 1: review blocks differ"
-[ "$(wc -l <"$SANDBOX/b2" | tr -d ' ')" = 17 ] || fail "step 1: block is not 17 lines"
+[ "$(wc -l <"$SANDBOX/b2")" -eq 17 ] || fail "step 1: block is not 17 lines"
 
 # 2. flag, no ~/.hermes: refused, nothing written
 OUT="$(inst "${ARGS[@]}" --hermes-profiles 2>&1)"; RC=$?

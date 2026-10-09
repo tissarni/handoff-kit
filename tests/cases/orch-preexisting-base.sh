@@ -14,7 +14,7 @@ B="$(make_brief testsub o-pe.md draft)"
 printf '\n## §4 Goal, and Done when\n\n1. `cat README.md` prints `fixed`.\n' >>"$B"
 PLAN="$(dirname "$B")/o-plan.md"
 make_plan "$PLAN" "$B"
-/usr/bin/sed -i 's/^base: main$/base: release/' "$PLAN"
+sed -i 's/^base: main$/base: release/' "$PLAN"
 STATUS="${PLAN%.md}.status.md"
 
 FAKE_CLAUDE="run=commit,close=FAIL-preexisting-once"

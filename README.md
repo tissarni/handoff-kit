@@ -9,13 +9,17 @@ kit's own word for that repo.
 
 ## What it needs
 
-- Linux, with bash, git and python3 (standard library only).
-- GNU coreutils (`readlink -f`, `timeout`, `mktemp`, `date -d`, `stat -c`), util-linux
-  (`flock`, `setsid`), procps (`pgrep`), awk and sed.
+- Linux, or macOS with Homebrew and `brew install bash coreutils findutils gnu-sed grep`:
+  each script puts the GNU tools first on its own `PATH` and runs under Homebrew's bash.
+- bash 4 or newer, git and python3 (standard library only).
+- GNU coreutils, findutils, sed and grep (`readlink -f`, `timeout`, `mktemp`, `date -d`,
+  `stat -c`), awk and `ps`; util-linux's `flock` and `setsid` where present, python3
+  standing in otherwise.
 - An agent CLI: `claude` by default, or `hermes` or `devin`.
 - `gh` for a GitHub origin, or `glab` for a GitLab one.
-- Optionally, a systemd user session (`systemctl`, `systemd-escape`) for the watchdog, and
-  `curl` with `notify.env` for messages.
+- Optionally, for the watchdog, a systemd user session (`systemctl`, `systemd-escape`) on
+  Linux, or a GUI login session (`launchctl`) on macOS; and `curl` with `notify.env` for
+  messages.
 
 ## The vault it works with
 
@@ -60,6 +64,7 @@ bash install.sh --vault <dir> --defaults <path relative to the vault> --projects
 ```
 
 for example `--vault ~/notes --defaults templates/handoff-defaults.yml --projects projects`.
+Add `--hermes-profiles` to also seed the hermes stage profiles (see `## Hermes profiles`).
 
 It writes, all under `$HOME`:
 
@@ -68,7 +73,9 @@ It writes, all under `$HOME`:
 - `~/.local/bin/handoff-launch`, `handoff-orchestrate` and `brief-check`: symlinks into
   this kit;
 - `~/.claude/skills/<name>/`: each skill under `skills/`, replaced whole;
-- `~/.config/systemd/user/handoff-watchdog@.service` and `.timer`, copied from `systemd/`.
+- `~/.config/systemd/user/handoff-watchdog@.service` and `.timer`, copied from `systemd/`;
+- `~/.hermes/profiles/review`, `run` and `close`: only with `--hermes-profiles`, each one
+  only when it does not exist yet.
 
 A flag left out keeps the value `config.env` already has. The environment's `VAULT`,
 `HANDOFF_DEFAULTS` and `HANDOFF_PROJECTS` are ignored by the installer. Run it again after
@@ -83,6 +90,32 @@ and `resume` arm each plan's timer. It exits 1 on a refusal and 2 on a bad flag.
   wins and quotes are stripped.
 - `~/.config/handoff/notify.env` holds `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, used by
   a plan with `notify: telegram`.
+
+## Hermes profiles
+
+The launcher can run a stage on hermes (`--backend hermes`). Hermes keeps one profile per
+role, a directory under `~/.hermes/profiles/` with a `SOUL.md` (standing instructions) and
+a `config.yaml` (which names the model). The stage-to-profile map:
+
+- `run` and `resume` use the `run` profile, `review` uses `review`, `close` uses `close`;
+- every other stage (revise, debrief, lesson) uses `default`, your own hermes setup, which
+  must provide the skills those stages call.
+
+A stage's model is the profile's `model.default`, unless `--model` is passed. A run or
+resume on a model ending `:free` is refused, unless `HANDOFF_ALLOW_FREE_RUN=1`.
+
+The kit ships a generic `SOUL.md` for each of the three profiles, under
+`hermes/profiles/`. The review one holds the whole review: a hermes review gets the bare
+brief, with no wrapper and no skill, so the procedure and the output block that the next
+stage parses reach the session only through that SOUL. The run one defers to the report
+format in the run prompt. `bash install.sh --hermes-profiles` creates each missing profile
+from them, with the `model:` block of `~/.hermes/config.yaml` copied into its `config.yaml`
+(mode 600). A profile that already exists, whatever it holds, is kept and never written to.
+Without the flag, nothing under `~/.hermes` is read or written.
+
+The flag never writes credentials: give each new profile the `.env` or `auth.json` its
+provider needs. Hermes has no read-only mode, so the review and close profiles are
+read-only by their SOUL alone.
 
 ## Commands
 
@@ -145,17 +178,29 @@ the vault only while the kit sits inside it.
 
 ## Watchdog
 
-The timer fires 5 minutes after boot, then every 30 minutes, and runs
+On Linux the timer fires 5 minutes after boot, then every 30 minutes, and runs
 `handoff-orchestrate tick <plan>`. `start` and `resume` arm a plan's timer, and the driver
-disables it after the last phase. Without a systemd user session, run
-`/loop 30m handoff-orchestrate tick <plan>` in an agent session instead.
+disables it after the last phase.
+
+On macOS, with no systemd and a GUI login session, `start` and `resume` fill
+`launchd/handoff-watchdog.plist` in for the plan, write it to
+`~/Library/LaunchAgents/<label>.plist` and load it with `launchctl bootstrap`. The label is
+`handoff-watchdog.<n>`, `<n>` being the checksum (`cksum`) of the plan's real path; the log
+is `~/Library/Logs/<label>.log`. The driver retires the agent after the last phase, and a
+tick retires it too when it finds the plan finished.
+
+Without either, run `/loop 30m handoff-orchestrate tick <plan>` in an agent session instead.
 
 ## Tests
 
 - `bash tests/run.sh [case…]` runs every case, or the cases named.
 - Each case has its own sandbox, with its own `HOME` and `PATH` and fake `claude`, `gh`,
-  `glab`, `curl` and `systemctl`.
-- `HANDOFF_SCRIPTS_DIR=<dir>` runs the cases against the scripts in `<dir>`.
+  `glab`, `curl`, `systemctl` and `launchctl`.
+- `HANDOFF_SCRIPTS_DIR=<dir>` runs the cases against the scripts in `<dir>`: the launcher,
+  the orchestrator, `brief-check.sh`, `handoff-usage.py` and `install.sh`.
+- CI runs the suite on every push and pull request, on `ubuntu-latest` and on
+  `macos-latest`; a failure in either job fails the run. The macOS job installs bash and the
+  GNU tools first.
 - Never run `tests/probe-headless-guard.sh`: it starts real, paid sessions.
 
 ## Layout
@@ -165,10 +210,13 @@ disables it after the last phase. Without a systemd user session, run
 - `brief-check.sh`: checks a brief's claims against its repo.
 - `handoff-usage.py`: prices a Claude Code session transcript from its usage rows.
 - `install.sh`: installs the kit for the current user.
+- `launchd/`: the macOS watchdog agent's plist template.
 - `hooks/`: the git hooks the launcher sets for a stage session.
 - `guards/`: a guard that refuses background waits in headless stages.
 - `skills/`: the repo-side skills `handoff-review` and `handoff-close`.
+- `hermes/`: the generic hermes profile seeds, `profiles/<name>/SOUL.md`.
 - `systemd/`: the watchdog service and timer units.
 - `tests/`: the suite, its fakes and fixtures.
+- `.github/workflows/tests.yml`: the CI workflow that runs the suite.
 - `AGENTS.md`, `CLAUDE.md`: rules for an agent working on the kit.
 - `.gitattributes`, `.gitignore`: LF line endings and ignored caches.

@@ -21,7 +21,7 @@ driver_exited() { /usr/bin/grep -q 'driver exiting' "${1%.md}.events.log" 2>/dev
 
 # 1. Held by a broken plan.
 new_plan suba; BRIEF_A="$BRIEF"; PLAN_A="$PLAN"
-/usr/bin/sed -i 's/^orchestration: planned$/orchestration: planned          # planned -> running/' "$PLAN_A"
+sed -i 's/^orchestration: planned$/orchestration: planned          # planned -> running/' "$PLAN_A"
 FAKE_CLAUDE="close=FAIL"
 orch start "$PLAN_A" --backend claude >/dev/null 2>&1
 wait_for 60 driver_exited "$PLAN_A" || fail "A: driver did not exit within 60s"
@@ -32,7 +32,7 @@ assert_eq "$(cat "$LK")" "$(readlink -f "$PLAN_A")" "lock content"
 
 # 2. A second plan is refused before git moves anything.
 new_plan subb; BRIEF_B="$BRIEF"; PLAN_B="$PLAN"
-/usr/bin/sed -i -e 's/^branch: feat\/test$/branch: feat\/other/' -e 's/^project: testsub$/project: subb\nsetup: make deps/' "$PLAN_B"
+sed -i -e 's/^branch: feat\/test$/branch: feat\/other/' -e 's/^project: testsub$/project: subb\nsetup: make deps/' "$PLAN_B"
 OUT="$(orch start "$PLAN_B" --backend claude 2>&1)"; RC=$?
 [ "$RC" -eq 2 ] || fail "B: expected exit 2, got $RC. Output:
 $OUT"
@@ -50,7 +50,7 @@ assert_eq "$(cat "$LK")" "$(readlink -f "$PLAN_A")" "lock changed by the refusal
 # 3. The worktree runs it.
 "${GIT_ENV[@]}" git -C "$REPO_UT" worktree add -q --detach "$REPO_UT-subb" origin/main \
   || fail "worktree add failed"
-/usr/bin/sed -i "s|^repo: .*|repo: $REPO_UT-subb|" "$BRIEF_B"
+sed -i "s|^repo: .*|repo: $REPO_UT-subb|" "$BRIEF_B"
 WT_GIT="$("${GIT_ENV[@]}" git -C "$REPO_UT-subb" rev-parse --absolute-git-dir)"
 FAKE_CLAUDE="run=commit"
 OUT="$(orch start "$PLAN_B" --backend claude 2>&1)" || fail "B in worktree: start failed:

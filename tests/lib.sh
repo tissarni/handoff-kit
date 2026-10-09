@@ -3,6 +3,23 @@
 # per case, outside the repo; every command against it runs under `env -i` so nothing
 # in this session's own environment (HANDOFF_HARNESS, GIT_CONFIG_*, CLAUDE*) leaks in
 # and commits through the real hooks or writes to the real HOME.
+# >>> portable preamble
+# Identical in every script that carries it; tests/cases/portable-preamble.sh fails when the
+# copies differ. On macOS it puts Homebrew's GNU tools first on PATH and runs the script under
+# Homebrew's bash, since the code after it needs bash 4 and GNU options. Elsewhere it does nothing.
+case "${OSTYPE:-}" in darwin*)
+  for _hb in /opt/homebrew /usr/local; do
+    [ -x "$_hb/bin/bash" ] || continue
+    for _g in grep gnu-sed findutils coreutils; do
+      case ":$PATH:" in *":$_hb/opt/$_g/libexec/gnubin:"*) ;; *) PATH="$_hb/opt/$_g/libexec/gnubin:$PATH" ;; esac
+    done
+    export PATH
+    [ "${BASH_VERSINFO[0]}" -ge 4 ] || exec "$_hb/bin/bash" "$0" ${1+"$@"}
+    break
+  done
+  [ "${BASH_VERSINFO[0]}" -ge 4 ] || { printf '%s: needs bash 4 or newer and the GNU tools: brew install bash coreutils findutils gnu-sed grep\n' "$0" >&2; exit 1; } ;;
+esac
+# <<< portable preamble
 set -uo pipefail
 
 # This session may itself be a handoff repo stage, carrying GIT_CONFIG_* (pointing at
@@ -50,7 +67,7 @@ sandbox_cleanup() {
 
 write_fakes() {
   mkdir -p "$SANDBOX/bin"
-  for f in claude systemctl curl gh glab; do
+  for f in claude systemctl launchctl curl gh glab; do
     cp "$FAKES_DIR/$f" "$SANDBOX/bin/$f"
     chmod +x "$SANDBOX/bin/$f"
   done
@@ -98,7 +115,9 @@ EOF
   [ -d "$REPO_ROOT/guards" ] && cp -r "$REPO_ROOT/guards" "$SANDBOX/kit/guards"
   cp -r "$REPO_ROOT/skills" "$SANDBOX/kit/skills"
   cp -r "$REPO_ROOT/systemd" "$SANDBOX/kit/systemd"
-  cp "$REPO_ROOT/install.sh" "$SANDBOX/kit/install.sh"
+  cp -r "$REPO_ROOT/launchd" "$SANDBOX/kit/launchd"
+  [ -d "$REPO_ROOT/hermes" ] && cp -r "$REPO_ROOT/hermes" "$SANDBOX/kit/hermes"
+  if [ -f "$src/install.sh" ]; then cp "$src/install.sh" "$SANDBOX/kit/install.sh"; else cp "$REPO_ROOT/install.sh" "$SANDBOX/kit/install.sh"; fi
   cp "$REPO_ROOT/tests/fixtures/handoff-defaults.yml" \
      "$SANDBOX/vault/02-projects/_templates/handoff-defaults.yml"
   python3 - "$SANDBOX/vault/02-projects/_templates/handoff-defaults.yml" <<'PY'
@@ -118,8 +137,10 @@ PY
 # The env every sandbox command runs under. VAULT and the two other roots are included;
 # use orch_novault for the one case that must read VAULT from config.env.
 _sbx_env() {
+  local sys="/usr/local/bin:/usr/bin:/bin"
+  case "${OSTYPE:-}" in darwin*) sys="/opt/homebrew/bin:$sys" ;; esac
   SBX_ENV=(
-    "PATH=$SANDBOX/bin:/usr/local/bin:/usr/bin:/bin"
+    "PATH=${SBX_PATH:-$SANDBOX/bin:$sys}"
     "HOME=$SANDBOX/home"
     "VAULT=$SANDBOX/vault"
     "HANDOFF_DEFAULTS=02-projects/_templates/handoff-defaults.yml"

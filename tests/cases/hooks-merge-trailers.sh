@@ -47,7 +47,7 @@ expect_trailers() {   # $1 = repo dir, $2 = what
 
 for d in "$R" "$SANDBOX/wt"; do
   out="$(git -C "$d" merge dev 2>&1)" || fail "merge in $d did not commit: $out"
-  [ "$(git -C "$d" rev-list --parents -1 HEAD | wc -w)" = 3 ] || fail "HEAD in $d is not a merge commit"
+  [ "$(git -C "$d" rev-list --parents -1 HEAD | wc -w)" -eq 3 ] || fail "HEAD in $d is not a merge commit"
   [ "$(git -C "$d" log -1 --format=%s)" = "Merge branch 'dev' into $(git -C "$d" branch --show-current)" ] || fail "merge subject changed in $d"
   expect_trailers "$d" "merge in $d"
 done
@@ -56,6 +56,17 @@ echo more >>"$R/f"; G add f
 G commit -q -m "feat: two" -m "Co-Authored-By: Someone <s@example.com>" || fail "normal commit refused"
 expect_trailers "$R" "normal commit"
 G log -1 --format=%B | /usr/bin/grep -qi 'Co-Authored-By' && fail "Co-Authored-By survived prepare-commit-msg"
+
+# Attribution stripping keeps body lines, even one holding "co-authored-by:" mid-line.
+echo three >>"$R/f"; G add f
+G commit -q -m "feat: three" -m "A body line." -m "see the co-authored-by: note in the body" \
+  -m "co-authored-by: Lower <l@example.com>" -m "  Co-Authored-By: Indented <i@example.com>" \
+  -m "Generated with [Claude Code]" || fail "attribution commit refused"
+expect_trailers "$R" "attribution commit"
+MSGB="$(G log -1 --format=%B)"
+printf '%s\n' "$MSGB" | /usr/bin/grep -qxF 'A body line.' || fail "body line lost"
+printf '%s\n' "$MSGB" | /usr/bin/grep -qF 'see the co-authored-by: note in the body' || fail "mid-line co-authored-by body line lost"
+printf '%s\n' "$MSGB" | /usr/bin/grep -qiE 'Lower|Indented|Generated with' && fail "attribution survived: $MSGB"
 
 # commit-msg alone: what it sees when prepare-commit-msg was bypassed.
 (cd "$R" && printf 'subject\n\nbody\n' >"$SANDBOX/m1" && ! "$HOOKS_DIR/commit-msg" "$SANDBOX/m1" 2>/dev/null) \

@@ -3,6 +3,23 @@
 # branch's git facts in one command. Standard library only; git run through subprocess
 # argument lists, never a shell string. Read-only: never writes into a repo, never
 # fetches.
+# >>> portable preamble
+# Identical in every script that carries it; tests/cases/portable-preamble.sh fails when the
+# copies differ. On macOS it puts Homebrew's GNU tools first on PATH and runs the script under
+# Homebrew's bash, since the code after it needs bash 4 and GNU options. Elsewhere it does nothing.
+case "${OSTYPE:-}" in darwin*)
+  for _hb in /opt/homebrew /usr/local; do
+    [ -x "$_hb/bin/bash" ] || continue
+    for _g in grep gnu-sed findutils coreutils; do
+      case ":$PATH:" in *":$_hb/opt/$_g/libexec/gnubin:"*) ;; *) PATH="$_hb/opt/$_g/libexec/gnubin:$PATH" ;; esac
+    done
+    export PATH
+    [ "${BASH_VERSINFO[0]}" -ge 4 ] || exec "$_hb/bin/bash" "$0" ${1+"$@"}
+    break
+  done
+  [ "${BASH_VERSINFO[0]}" -ge 4 ] || { printf '%s: needs bash 4 or newer and the GNU tools: brew install bash coreutils findutils gnu-sed grep\n' "$0" >&2; exit 1; } ;;
+esac
+# <<< portable preamble
 set -euo pipefail
 export PYTHONIOENCODING=utf-8
 BRIEF_CHECK_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"

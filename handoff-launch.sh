@@ -137,6 +137,23 @@
 # Everything except the mode comes from the brief's own frontmatter, so a brief always
 # launches the way it records, and there is one place to look when it does not.
 
+# >>> portable preamble
+# Identical in every script that carries it; tests/cases/portable-preamble.sh fails when the
+# copies differ. On macOS it puts Homebrew's GNU tools first on PATH and runs the script under
+# Homebrew's bash, since the code after it needs bash 4 and GNU options. Elsewhere it does nothing.
+case "${OSTYPE:-}" in darwin*)
+  for _hb in /opt/homebrew /usr/local; do
+    [ -x "$_hb/bin/bash" ] || continue
+    for _g in grep gnu-sed findutils coreutils; do
+      case ":$PATH:" in *":$_hb/opt/$_g/libexec/gnubin:"*) ;; *) PATH="$_hb/opt/$_g/libexec/gnubin:$PATH" ;; esac
+    done
+    export PATH
+    [ "${BASH_VERSINFO[0]}" -ge 4 ] || exec "$_hb/bin/bash" "$0" ${1+"$@"}
+    break
+  done
+  [ "${BASH_VERSINFO[0]}" -ge 4 ] || { printf '%s: needs bash 4 or newer and the GNU tools: brew install bash coreutils findutils gnu-sed grep\n' "$0" >&2; exit 1; } ;;
+esac
+# <<< portable preamble
 set -euo pipefail
 
 # A loop exits 30 on any launcher error so a caller reading exit codes can tell it from a
@@ -301,7 +318,7 @@ if [ "$BACKEND" = "devin" ]; then
   [ -n "$DEVIN_BIN" ] || die "devin not found. Checked PATH, ~/.local/bin, /usr/local/bin and ~/.local/share/devin/cli/_versions/current/bin. Install it (curl -fsSL https://cli.devin.ai/install.sh | bash) or set DEVIN_BIN."
   # Fail before anything costs anything: a headless stage on an unauthenticated CLI
   # returns prose nobody can parse, and the brief then keeps a state it never earned.
-  if ! "$DEVIN_BIN" auth status 2>&1 | grep -qi 'logged in'; then
+  if ! "$DEVIN_BIN" auth status 2>&1 | /usr/bin/grep -qi 'logged in'; then
     die "devin is not authenticated. Run 'devin auth login' (on a headless/SSH box add --force-manual-token-flow)."
   fi
 fi
@@ -1630,6 +1647,8 @@ if [ "$BACKEND" = "hermes" ]; then
 elif [ "$BACKEND" = "claude" ]; then
   [ "$MODE" = "resume" ] && ARGS+=(--resume "$SESSION")
   SETTINGS_NOTE="none"
+  # Empty, not "none": this note is appended to with ${ENV_NOTE:+$ENV_NOTE }, which a
+  # placeholder would survive as a prefix. The dry-run summary prints "none" when empty.
   ENV_NOTE=""
   GUARD_PATH=""
   HEADLESS=0
@@ -1797,7 +1816,7 @@ else
   export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:+$PYTEST_ADDOPTS }-q --tb=short"
   install_git_hooks "$BRIEF_REPO"
   export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$HOOKS_DIR"
-  if [ "$BACKEND" = "claude" ] && ! grep -q '"includeCoAuthoredBy": *false' "$HOME/.claude/settings.json" 2>/dev/null; then
+  if [ "$BACKEND" = "claude" ] && ! /usr/bin/grep -q '"includeCoAuthoredBy": *false' "$HOME/.claude/settings.json" 2>/dev/null; then
     printf 'NOTE: ~/.claude/settings.json lacks "includeCoAuthoredBy": false — the hook strips the line anyway, but set it so claude stops offering it.\n' >&2
   fi
 fi
@@ -1948,12 +1967,12 @@ usage_ledger
 # The one failure that looks like success: a stage rejected before it ran anything. Devin
 # answers a model the account cannot reach with "Upgrade to Pro" and still exits 0, so this
 # is named here rather than left to the no-marker warning below.
-if grep -qF 'Upgrade to Pro to access this model' "$CAPTURE"; then
+if /usr/bin/grep -qF 'Upgrade to Pro to access this model' "$CAPTURE"; then
   printf 'NOTE: devin refused the model — this account tier does not include it. Launch without --model, or upgrade the plan.\n' >&2
 fi
 
 SOURCE=""
-if grep -qF "$MARKER" "$CAPTURE"; then
+if /usr/bin/grep -qF "$MARKER" "$CAPTURE"; then
   SOURCE=stdout
 else
   # Claude Code names a project's transcript directory after its cwd with / -> -
@@ -2027,6 +2046,6 @@ set_state "$NEXT_STATE"
 
 # One line for the terminal — the block itself is on disk now, and printing 17 KB into
 # whatever session launched this is the cost this file exists to avoid.
-HEADLINE="$(grep -m1 -iE '^(verdict|result|outcome|status):' "$OUT_FILE" || true)"
+HEADLINE="$(/usr/bin/grep -m1 -iE '^(verdict|result|outcome|status):' "$OUT_FILE" || true)"
 printf 'WROTE %s (%s lines, from %s)%s\n' "$OUT_FILE" "$(wc -l <"$OUT_FILE")" "$SOURCE" "${HEADLINE:+ — $HEADLINE}"
 exit "$RC"

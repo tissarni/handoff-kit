@@ -22,7 +22,7 @@ printf '%s\n' "$OUT" | /usr/bin/grep -qxF 'RUN: failed — close audit VERDICT: 
 $OUT"
 [ "$(resumes fx2)" = 1 ] || fail "twice: expected 1 resume, got $(resumes fx2)"
 # relaunched from reported (a retried close, a human resume): the run has had its fix-up
-/usr/bin/sed -i 's/^handoff: .*/handoff: reported/' "$BRIEF"
+sed -i 's/^handoff: .*/handoff: reported/' "$BRIEF"
 OUT="$(launch loop "$BRIEF" --gate auto --backend claude 2>&1)"; RC=$?
 [ "$RC" -eq 20 ] || fail "relaunch: expected exit 20, got $RC. Output:
 $OUT"

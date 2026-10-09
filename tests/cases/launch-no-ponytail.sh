@@ -5,7 +5,7 @@ source "$DIR/../lib.sh"
 sandbox_init
 
 BRIEF="$(make_brief testsub case-lite-mode.md draft)"
-/usr/bin/sed -i 's/ponytail-mode: full/ponytail-mode: lite/' "$BRIEF"
+sed -i 's/ponytail-mode: full/ponytail-mode: lite/' "$BRIEF"
 CALLS="$SANDBOX/state/calls.log"
 
 OUT="$(launch loop "$BRIEF" --gate auto --backend claude 2>&1)"; RC=$?

@@ -1630,6 +1630,8 @@ if [ "$BACKEND" = "hermes" ]; then
 elif [ "$BACKEND" = "claude" ]; then
   [ "$MODE" = "resume" ] && ARGS+=(--resume "$SESSION")
   SETTINGS_NOTE="none"
+  # Empty, not "none": this note is appended to with ${ENV_NOTE:+$ENV_NOTE }, which a
+  # placeholder would survive as a prefix. The dry-run summary prints "none" when empty.
   ENV_NOTE=""
   GUARD_PATH=""
   HEADLESS=0

@@ -3,15 +3,20 @@
 # Installed for every launcher stage through core.hooksPath, so it holds on claude,
 # hermes and devin alike and for every spelling of the push (`git push`, refspecs,
 # `push origin HEAD:dev`, a push made while checked out on dev). Only a human merges to
-# dev or main, through the PR. Hands over to the repo's own pre-push afterwards.
+# dev or main, through the PR. Hands over to the repo's own pre-push afterwards, and
+# replays git's ref lines to it, byte for byte, since a hook such as git-lfs's reads them.
 PROTECTED='^refs/heads/(dev|main|master|staging|production)$'
+# The trailing x keeps the final newline through the command substitution.
+LINES="$(cat; printf x)"
+LINES="${LINES%x}"
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "$remote_ref" ] || continue
-  if printf '%s' "$remote_ref" | grep -qE "$PROTECTED"; then
+  if [[ "$remote_ref" =~ $PROTECTED ]]; then
     printf 'handoff pre-push: refused — %s is a shared branch; only a human merges there, through the PR (remote %s).\n' "$remote_ref" "$1" >&2
     exit 1
   fi
-done
+done <<<"$LINES"
 OWN="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/pre-push"
-[ -x "$OWN" ] && exec "$OWN" "$@"
-exit 0
+[ -x "$OWN" ] || exit 0
+printf '%s' "$LINES" | "$OWN" "$@"
+exit "${PIPESTATUS[1]}"

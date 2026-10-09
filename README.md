@@ -156,6 +156,8 @@ disables it after the last phase. Without a systemd user session, run
 - Each case has its own sandbox, with its own `HOME` and `PATH` and fake `claude`, `gh`,
   `glab`, `curl` and `systemctl`.
 - `HANDOFF_SCRIPTS_DIR=<dir>` runs the cases against the scripts in `<dir>`.
+- CI runs the suite on every push and pull request, on `ubuntu-latest` (required) and on
+  `macos-latest` (advisory: that job may fail without failing the run).
 - Never run `tests/probe-headless-guard.sh`: it starts real, paid sessions.
 
 ## Layout
@@ -170,5 +172,6 @@ disables it after the last phase. Without a systemd user session, run
 - `skills/`: the repo-side skills `handoff-review` and `handoff-close`.
 - `systemd/`: the watchdog service and timer units.
 - `tests/`: the suite, its fakes and fixtures.
+- `.github/workflows/tests.yml`: the CI workflow that runs the suite.
 - `AGENTS.md`, `CLAUDE.md`: rules for an agent working on the kit.
 - `.gitattributes`, `.gitignore`: LF line endings and ignored caches.

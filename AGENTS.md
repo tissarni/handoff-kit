@@ -36,6 +36,10 @@ notes repo that holds those briefs and plans, named by `~/.config/handoff/config
 - **No names of people, hosts, clients or other projects, no decision-record numbers and no
   note paths**, in code, comments or docs. A reader of the kit has none of them. A comment
   states the rule and its reason in its own words.
+- **The repository is public, so the names rule covers what is written on GitHub too.** PR
+  titles and descriptions, review and issue comments, and commit messages follow the names
+  rule above. No hook reads a text typed on GitHub, and an edited text keeps its earlier
+  version in its edit history.
 - **Call `/usr/bin/grep`, never bare `grep`.** On some hosts `grep` resolves to another tool
   or dialect, and a pattern that works in one fails in the other. Some older lines still use
   the bare name.

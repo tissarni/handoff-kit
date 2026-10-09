@@ -1,0 +1,21 @@
+name: tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash tests/run.sh
+  macos:
+    runs-on: macos-latest
+    # Advisory: the kit does not run on macOS yet, so a failure here must not fail the run.
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash tests/run.sh

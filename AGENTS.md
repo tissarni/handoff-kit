@@ -62,6 +62,10 @@ notes repo that holds those briefs and plans, named by `~/.config/handoff/config
   `bash` its `PATH` holds, on every commit and push of a stage: no `mapfile`, case
   conversion or `sed -i`, and only `/usr/bin/grep`, since macOS's `/usr/bin/grep` and `sed`
   are BSD tools.
+- **Compare a count from `wc` as a number (`-eq`, `-gt`), never as a string (`=`).** BSD `wc`
+  pads its number with spaces, so on macOS `[ "$(wc -l <file)" = 2 ]` is false where `-eq 2`
+  holds. The hooks, `tests/run.sh` and the cases that do not source `tests/lib.sh` run without
+  a preamble of their own, so on macOS they may get BSD `wc`.
 - **A text change to `skills/` goes in a change of its own.** `install.sh` copies those
   skills to user level, so every repo session on the host runs the new text right after
   the next install.

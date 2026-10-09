@@ -17,8 +17,6 @@ jobs:
       - run: bash tests/run.sh
   macos:
     runs-on: macos-latest
-    # Advisory: the kit does not run on macOS yet, so a failure here must not fail the run.
-    continue-on-error: true
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7

@@ -187,8 +187,7 @@ On macOS, with no systemd and a GUI login session, `start` and `resume` fill
 `~/Library/LaunchAgents/<label>.plist` and load it with `launchctl bootstrap`. The label is
 `handoff-watchdog.<n>`, `<n>` being the checksum (`cksum`) of the plan's real path; the log
 is `~/Library/Logs/<label>.log`. The driver retires the agent after the last phase, and a
-tick retires it too when it finds the plan finished. The agent is inert until the
-orchestrator itself runs on macOS.
+tick retires it too when it finds the plan finished.
 
 Without either, run `/loop 30m handoff-orchestrate tick <plan>` in an agent session instead.
 
@@ -199,9 +198,9 @@ Without either, run `/loop 30m handoff-orchestrate tick <plan>` in an agent sess
   `glab`, `curl`, `systemctl` and `launchctl`.
 - `HANDOFF_SCRIPTS_DIR=<dir>` runs the cases against the scripts in `<dir>`: the launcher,
   the orchestrator, `brief-check.sh`, `handoff-usage.py` and `install.sh`.
-- CI runs the suite on every push and pull request, on `ubuntu-latest` (required) and on
-  `macos-latest` (advisory: that job may fail without failing the run). The macOS job installs bash and
-  the GNU tools first.
+- CI runs the suite on every push and pull request, on `ubuntu-latest` and on
+  `macos-latest`; a failure in either job fails the run. The macOS job installs bash and the
+  GNU tools first.
 - Never run `tests/probe-headless-guard.sh`: it starts real, paid sessions.
 
 ## Layout

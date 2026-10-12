@@ -57,12 +57,16 @@ state_of() {   # $1 = brief path
   /usr/bin/grep -m1 '^handoff:' "$1" 2>/dev/null | cut -d: -f2- | /usr/bin/sed -e 's/^[[:space:]]*//' -e "s/[\"']//g"
 }
 
+# Runs on EXIT, so $? on entry is the case's exit status. A failed case keeps its sandbox for
+# tests/run.sh to read the driver log from; run.sh removes it afterwards. Processes die either way.
 sandbox_cleanup() {
+  local rc=$?
   [ -n "${SANDBOX:-}" ] || return 0
   pkill -f "$SANDBOX" >/dev/null 2>&1 || true
   sleep 1
   pkill -9 -f "$SANDBOX" >/dev/null 2>&1 || true
-  rm -rf "$SANDBOX"
+  [ "$rc" -eq 0 ] && rm -rf "$SANDBOX"
+  return 0
 }
 
 write_fakes() {

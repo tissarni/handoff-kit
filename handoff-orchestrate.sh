@@ -280,7 +280,7 @@ printf '%s' "$WANT_BRANCH" | /usr/bin/grep -qE "$PROTECTED_RE" \
 # ---------------------------------------------------------------- plan writes
 set_plan_orch() {  # $1 = orchestration value; also stamps updated:
   python3 - "$PLAN" "$1" "$(date +%F)" <<'PY'
-import io, sys
+import io, os, stat, sys
 path, orch, today = sys.argv[1:4]
 lines = io.open(path, encoding='utf-8').read().split('\n')
 end = next(i for i, l in enumerate(lines[1:], 1) if l.strip() == '---')
@@ -292,13 +292,25 @@ for i in range(1, end):
     elif lines[i].startswith('updated:'):
         lines[i] = f'updated: {today}'
 if not seen: lines.insert(end, f'orchestration: {orch}')
-io.open(path, 'w', encoding='utf-8', newline='').write('\n'.join(lines))
+# Write beside the real path and rename over it: a reader sees the old file or the new, never a
+# truncated one. The temp file takes the target's mode; on any failure it is removed.
+real = os.path.realpath(path)
+tmp = f'{real}.tmp.{os.getpid()}'
+try:
+    with io.open(tmp, 'w', encoding='utf-8', newline='') as fh:
+        fh.write('\n'.join(lines))
+    os.chmod(tmp, stat.S_IMODE(os.stat(real).st_mode))
+    os.replace(tmp, real)
+except BaseException:
+    try: os.unlink(tmp)
+    except OSError: pass
+    raise
 PY
   log_event "plan orchestration -> $1"
 }
 set_phase_status() {  # $1 = pending|running|done|broken, on phases[PLAN_PHASE_IDX]
   python3 - "$PLAN" "$PLAN_PHASE_IDX" "$1" <<'PY'
-import io, re, sys
+import io, os, re, stat, sys
 path, idx, status = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 lines = io.open(path, encoding='utf-8').read().split('\n')
 end = next(i for i, l in enumerate(lines[1:], 1) if l.strip() == '---')
@@ -311,14 +323,26 @@ if idx < len(starts):
             lines[i] = f'{m.group(1)}status: {status}{m.group(2)}'; break
     else:
         lines.insert(lo + 1, f'    status: {status}')
-io.open(path, 'w', encoding='utf-8', newline='').write('\n'.join(lines))
+# Write beside the real path and rename over it: a reader sees the old file or the new, never a
+# truncated one. The temp file takes the target's mode; on any failure it is removed.
+real = os.path.realpath(path)
+tmp = f'{real}.tmp.{os.getpid()}'
+try:
+    with io.open(tmp, 'w', encoding='utf-8', newline='') as fh:
+        fh.write('\n'.join(lines))
+    os.chmod(tmp, stat.S_IMODE(os.stat(real).st_mode))
+    os.replace(tmp, real)
+except BaseException:
+    try: os.unlink(tmp)
+    except OSError: pass
+    raise
 PY
 }
 
 # ---------------------------------------------------------------- lock
 lock_pid()   { awk 'NR==1{print $2}' "$LOCK" 2>/dev/null || true; }
 lock_alive() { local p; p="$(lock_pid)"; [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
-write_lock() { printf 'pid %s started %s %s\n' "$1" "$(now_s)" "$(ts "$(now_s)")" >"$LOCK"; }
+write_lock() { printf 'pid %s started %s %s\n' "$1" "$(now_s)" "$(ts "$(now_s)")" >"$LOCK.tmp.$$" && mv -f "$LOCK.tmp.$$" "$LOCK"; }
 release_lock() { rm -f "$LOCK" "$STAGE_FILE" "$LOCK.tick"; }
 
 # The checkout lock lives in the checkout's own git dir (per worktree, never tracked, never
@@ -691,7 +715,7 @@ notify_check() {  # pre-flight: the channel must be able to send
 # ---------------------------------------------------------------- stage file + heartbeat
 # The driver writes "<brief> <loop pid> <epoch>" while a loop is live; the loop is started
 # in its own process group (setsid) so the pid is also the pgid the tick kills.
-write_stage() { printf '%s %s %s\n' "$1" "$2" "$(now_s)" >"$STAGE_FILE"; }
+write_stage() { printf '%s %s %s\n' "$1" "$2" "$(now_s)" >"$STAGE_FILE.tmp.$$" && mv -f "$STAGE_FILE.tmp.$$" "$STAGE_FILE"; }
 clear_stage() { rm -f "$STAGE_FILE"; }
 # A stage's start: the launcher rewrites the brief's frontmatter at every state change,
 # so the brief's mtime is when the current stage began — except for the first stage of

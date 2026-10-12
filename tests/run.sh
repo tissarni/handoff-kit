@@ -41,6 +41,10 @@ for f in "${files[@]}"; do
         tail -20 "$clog" | sed 's/^/  /'
       fi
     fi
+    # Remove only a directory named tmp.* that this case's own SANDBOX= line gave.
+    case "$(basename "${sbox:-/}")" in
+      tmp.*) [ -d "$sbox" ] && rm -rf "$sbox" ;;
+    esac
   fi
   rm -f "$out"
 done

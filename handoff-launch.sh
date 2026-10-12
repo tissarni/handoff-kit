@@ -628,7 +628,7 @@ PY
 }
 set_state() {
   python3 - "$BRIEF" "$1" "$(date +%F)" <<'PY'
-import io, sys
+import io, os, stat, sys
 path, state, today = sys.argv[1:4]
 text = io.open(path, encoding='utf-8').read()
 lines = text.split('\n')
@@ -641,7 +641,19 @@ for i in range(1, end):
         lines[i] = f'updated: {today}'
 if not seen:
     lines.insert(end, f'handoff: {state}')
-io.open(path, 'w', encoding='utf-8', newline='').write('\n'.join(lines))
+# Write beside the real path and rename over it: a reader sees the old file or the new, never a
+# truncated one. The temp file takes the target's mode; on any failure it is removed.
+real = os.path.realpath(path)
+tmp = f'{real}.tmp.{os.getpid()}'
+try:
+    with io.open(tmp, 'w', encoding='utf-8', newline='') as fh:
+        fh.write('\n'.join(lines))
+    os.chmod(tmp, stat.S_IMODE(os.stat(real).st_mode))
+    os.replace(tmp, real)
+except BaseException:
+    try: os.unlink(tmp)
+    except OSError: pass
+    raise
 PY
   printf 'handoff: %s -> %s  (%s)\n' "$BRIEF_HANDOFF" "$1" "$(basename "$BRIEF")" >&2
   BRIEF_HANDOFF="$1"

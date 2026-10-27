@@ -1598,6 +1598,27 @@ else
 $(cat "$BRIEF")"
 fi
 
+# Hermes dispatches a leading slash as a CLI command before inference. Notes skills
+# live in the vault, not necessarily in the selected profile's skill registry. Name
+# their authoritative files explicitly; never substitute a similarly named skill or
+# improvise the state/gate protocol when a local instruction file is unavailable.
+if [ "$BACKEND" = "hermes" ] && { [ "$MODE" = "revise" ] || [ "$MODE" = "debrief" ]; }; then
+  if [ "$MODE" = "revise" ]; then NOTES_SKILL=handoff-revise; NOTES_INPUT="$OUT_REVIEW"; else NOTES_SKILL=debrief; NOTES_INPUT="$OUT_REPORT"; fi
+  NOTES_SKILL_FILE="$VAULT/.agents/skills/$NOTES_SKILL/SKILL.md"
+  [ -r "$NOTES_SKILL_FILE" ] && [ -s "$NOTES_SKILL_FILE" ] || die "missing or unreadable notes skill: $NOTES_SKILL_FILE"
+  # JSON keeps each skill argument distinct even when a root, subproject or artifact
+  # path contains spaces. This is task data, not another shell or slash command.
+  PROMPT="$(python3 - "$VAULT" "$NOTES_SKILL" "$NOTES_SKILL_FILE" "$SUB" "${NOTES_INPUT#"$VAULT"/}" <<'PY'
+import json, sys
+root, skill, path, sub, artifact = sys.argv[1:]
+print('Execute this notes task. Read the authoritative local skill instructions at the exact skill_file below before taking any action, then follow them with the arguments array in order. Resolve paths relative to notes_root. Do not substitute a profile/global skill or invent a fallback if the file cannot be read; report the failure and stop without changing state. This is unattended: Do not ask questions or wait for user input; follow the skill\'s unattended outcome and state/gate rules. The skill, not this wrapper, owns all artifact writes and state transitions.')
+print('=== NOTES TASK ===')
+print(json.dumps({'notes_root': root, 'skill': skill, 'skill_file': path,
+                  'arguments': [sub, artifact, 'unattended']}, ensure_ascii=False))
+PY
+)" || die "could not build notes task"
+fi
+
 # ---------------------------------------------------------------- argv
 # Order is load-bearing: every flag, then `--`, then the prompt LAST. Two separate
 # failures forced this, and `--` is the one thing that fixes both.

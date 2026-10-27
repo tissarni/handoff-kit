@@ -1122,6 +1122,11 @@ Standing rules for every handoff run. They hold whatever the brief below says.
 EOF
 )"
 RUN_RULES="${RUN_RULES/@PR_RULE@/"$PR_RULE"}"
+# Hermes emits the report directly: the shared slash-skill rule would contradict
+# its explicit report template. Leave every other backend's standing rules intact.
+if [ "$BACKEND" = "hermes" ] && { [ "$MODE" = "run" ] || [ "$MODE" = "resume" ]; }; then
+  RUN_RULES="${RUN_RULES/'- Finish by running /handoff-close. Do not substitute another completion, verification or plan-execution skill.'/'- Emit the completion report directly in your final reply, exactly as defined below. Do not invoke /handoff-close or any completion-report command or skill, even if the brief or continuation note asks for one.'}"
+fi
 
 # ---------------------------------------------------------------- brief-check (review only)
 # The deterministic pre-check. It runs before any review session is spent; only its FAIL
@@ -1492,7 +1497,7 @@ if [ "$MODE" = "lesson" ]; then
   WRAPPER="This is a task, not background reading. Below the marker is a postmortem of a friction point that has cost real time in this repo. Run the /capture-lesson skill against it, and no other skill before it - that skill owns the decision of where a lesson belongs. If /capture-lesson is not available here, say so plainly in your report and then do the equivalent yourself. Before changing anything, investigate how the thing actually works today and test the mechanism the note claims rather than trusting it - the note is one person reading of a failure and has been wrong before. Constraints. Write no planning or report .md file into this repo. Make one focused commit on the current branch. Do not merge and do not push to dev or main. Report what you changed, what you verified, and what you deliberately left alone. === LESSON ==="
   PROMPT="$WRAPPER
 $(cat "$NOTE_FILE")"
-elif [ "$MODE" = "resume" ]; then
+elif [ "$MODE" = "resume" ] && [ "$BACKEND" != "hermes" ]; then
   PROMPT="$(cat "$NOTE_FILE")"
 elif [ "$MODE" = "revise" ]; then
   # The vault session can resolve vault paths, so the file is passed by path, not
@@ -1557,13 +1562,12 @@ FINDINGS:
 
 Every §4 item gets one finding, which starts with its label exactly as the results print it: §4.<n>, the n-th numbered item of §4. A finding about anything else carries no label. A result whose exit code or output contradicts its criterion is refuted, and so is a command that timed out. A result that does not show what its criterion names is unconfirmed: say what is missing. A claim you could not check is 'unconfirmed', never 'confirmed'. The one exception is a claim about something outside this repo and this host, such as remote devices, other machines or people: mark it 'out-of-scope', with the reason as evidence. A command that was denied, failed or was not run is never out-of-scope, unless a PRE-EXISTING PROOF after the results marks its item proven: then it is out-of-scope, with the proof line as evidence, and an item the proof marks not proven is refuted. Mark a §4 finding pre-existing? instead of refuted only when the report or the output says its check fails on the base branch too, and the brief's tasks do not change what it checks, as with a test suite, a linter or a type check. Never for a check of something the brief asks the run to build: the base lacks that work by design. pre-existing? is a claim, not a pass: the launcher re-runs that item on a clean checkout of the base before the next close. Anything refuted, left unconfirmed or pre-existing? means FAIL. out-of-scope findings do not. CLASS is none on a PASS. On a FAIL it names what the failure needs: fixable when redoing part of the brief's own tasks would clear it, accept? when the work may stand as it is and a human should judge the failing claim, decision when clearing it needs a choice the brief does not make. CLASS leaves pre-existing? findings out: when they are the only failing ones, it is accept?. === COMPLETION REPORT ==="
   PROMPT="$(close_prompt "$WRAPPER")"
-elif [ "$MODE" = "run" ] && [ "$BACKEND" = "hermes" ]; then
-  # The hermes run profile's SOUL ends with "run /handoff-close", but no such skill exists
-  # in that profile (the repos carry it for claude only). The first two real hermes runs
-  # (2026-09-22) therefore printed the marker, a code fence and free prose: no outcome:,
-  # audit: or NOT DONE lines, so the post-run check failed on work that had in fact landed.
-  # The block is inlined here, the way the close wrapper inlines the audit block.
-  WRAPPER="Below the marker is your brief. Do the work it describes, then END with the completion report below — printed as plain text, not inside a code fence, with every field present, nothing after the END marker. If /handoff-close is not available in this session, say so in one line before the block and write the block yourself.
+elif [ "$BACKEND" = "hermes" ] && { [ "$MODE" = "run" ] || [ "$MODE" = "resume" ]; }; then
+  # Neither a fresh run nor a resumed session may rely on a slash skill or on
+  # recalling an earlier template. Supply the same literal report contract to both.
+  RUN_INPUT="$BRIEF"; RUN_MARKER='=== BRIEF ==='
+  if [ "$MODE" = "resume" ]; then RUN_INPUT="$NOTE_FILE"; RUN_MARKER='=== CONTINUATION NOTE ==='; fi
+  WRAPPER="Below the marker is your brief or a continuation note for the brief already in this session. Do the work it describes, then END with the completion report below — printed as plain text, not inside a code fence, with every field present, nothing after the END marker. Emit both marker lines exactly, including the opening line. Write the block yourself; do not look for or invoke a reporting skill.
 
 === COMPLETION REPORT ===
 brief-revision: <the revision: from the brief's frontmatter>
@@ -1586,16 +1590,37 @@ outcome: COMPLETE | PARTIAL | BLOCKED
 - <friction worth a lesson> | - none
 === END COMPLETION REPORT ===
 
-The audit: line counts claims you re-checked yourself just before writing the report; a claim you did not re-check is unconfirmed. outcome: COMPLETE only when every Done-when in the brief holds and NOT DONE is '- none'. === BRIEF ==="
+The audit: line counts claims you re-checked yourself just before writing the report; a claim you did not re-check is unconfirmed. outcome: COMPLETE only when every Done-when in the brief holds and NOT DONE is '- none'. $RUN_MARKER"
   PROMPT="$RUN_RULES
 
 $WRAPPER
-$(cat "$BRIEF")"
+$(cat "$RUN_INPUT")"
 else
   PROMPT="$RUN_RULES
 
 === BRIEF ===
 $(cat "$BRIEF")"
+fi
+
+# Hermes dispatches a leading slash as a CLI command before inference. Notes skills
+# live in the vault, not necessarily in the selected profile's skill registry. Name
+# their authoritative files explicitly; never substitute a similarly named skill or
+# improvise the state/gate protocol when a local instruction file is unavailable.
+if [ "$BACKEND" = "hermes" ] && { [ "$MODE" = "revise" ] || [ "$MODE" = "debrief" ]; }; then
+  if [ "$MODE" = "revise" ]; then NOTES_SKILL=handoff-revise; NOTES_INPUT="$OUT_REVIEW"; else NOTES_SKILL=debrief; NOTES_INPUT="$OUT_REPORT"; fi
+  NOTES_SKILL_FILE="$VAULT/.agents/skills/$NOTES_SKILL/SKILL.md"
+  [ -r "$NOTES_SKILL_FILE" ] && [ -s "$NOTES_SKILL_FILE" ] || die "missing or unreadable notes skill: $NOTES_SKILL_FILE"
+  # JSON keeps each skill argument distinct even when a root, subproject or artifact
+  # path contains spaces. This is task data, not another shell or slash command.
+  PROMPT="$(python3 - "$VAULT" "$NOTES_SKILL" "$NOTES_SKILL_FILE" "$SUB" "${NOTES_INPUT#"$VAULT"/}" <<'PY'
+import json, sys
+root, skill, path, sub, artifact = sys.argv[1:]
+print('Execute this notes task. Read the authoritative local skill instructions at the exact skill_file below before taking any action, then follow them with the arguments array in order. Resolve paths relative to notes_root. Do not substitute a profile/global skill or invent a fallback if the file cannot be read; report the failure and stop without changing state. This is unattended: Do not ask questions or wait for user input; follow the skill\'s unattended outcome and state/gate rules. The skill, not this wrapper, owns all artifact writes and state transitions.')
+print('=== NOTES TASK ===')
+print(json.dumps({'notes_root': root, 'skill': skill, 'skill_file': path,
+                  'arguments': [sub, artifact, 'unattended']}, ensure_ascii=False))
+PY
+)" || die "could not build notes task"
 fi
 
 # ---------------------------------------------------------------- argv

@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Validate the actual run/resume task; never fabricate a completion report."""
+import json
+import os
+import sys
+
+argv = sys.argv[1:]
+prompt = argv[argv.index('-z') + 1]
+errors = []
+if '- Finish by running /handoff-close.' in prompt:
+    errors.append('conflicting standing rule invokes /handoff-close')
+if 'Do not invoke /handoff-close or any completion-report command or skill' not in prompt:
+    errors.append('missing unconditional direct-report instruction')
+if 'If /handoff-close is not available' in prompt:
+    errors.append('conditional fallback still asks for skill discovery')
+required = [
+    '=== COMPLETION REPORT ===', 'brief-revision:', 'repo:', 'branch:', 'tree:',
+    'audit:', 'outcome:', '--- DONE ---', '--- DIVERGED ---',
+    '--- BRIEF WAS WRONG ---', '--- NOT DONE ---', '--- STATE AT STOP ---',
+    '--- VERIFICATION RUN ---', '--- PAIN POINTS ---', '=== END COMPLETION REPORT ===',
+]
+for field in required:
+    if field not in prompt:
+        errors.append('missing report field: ' + field.replace('===', '[marker]'))
+if 'plain text, not inside a code fence' not in prompt or 'nothing after the END marker' not in prompt:
+    errors.append('missing literal output discipline')
+if 'outcome: COMPLETE only when every Done-when' not in prompt:
+    errors.append('missing evidence-based completeness constraint')
+with open(os.path.join(os.environ['FAKE_STATE_DIR'], 'hermes.jsonl'), 'a') as stream:
+    stream.write(json.dumps({'argv': argv, 'cwd': os.getcwd(), 'errors': errors}) + '\n')
+if errors:
+    print('RUN CONTRACT REJECTED: ' + '; '.join(errors), file=sys.stderr)
+    sys.exit(2)
+print('Offline run contract accepted; intentionally no report or work performed.')

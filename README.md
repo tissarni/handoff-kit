@@ -116,9 +116,19 @@ cannot create this approval. Turning a repository policy off prevents any task o
 from enabling it. These local files are convenience policy, not an isolation boundary
 against another process running as the same user.
 
-`HANDOFF_AUTO_MERGE` accepts only `true` or `false`; invalid settings fail closed. This
-policy interface is now available to a companion initializer, but it does not itself add
-automatic finalization, forge readiness checks or merge behavior to launcher/orchestrator.
+`HANDOFF_AUTO_MERGE` accepts only `true` or `false`; invalid settings fail closed. The policy
+helper also exposes `dev-bootstrap --repository owner/name` and a narrow `finalize` command.
+The bootstrap reads the repository and main ref, creates missing dev from that SHA, and
+preserves an existing dev. Finalization requires `GH_TOKEN`, exact GitHub host, a local
+`--policy-repo`, explicit task identity/revision/risk, and a non-held policy. It requires an
+open, non-draft PR to dev with the exact feature head, successful commit status and completed
+successful check runs, then requests one squash merge with the expected head SHA, reads the
+PR back, and deletes the remote branch only if its ref still equals that SHA. A lost merge
+response is reconciled by read-back and is never retried. These operations are deterministic
+control-plane helpers, not a final reviewer: they do not inspect brief acceptance evidence,
+blocking reviews, required-check configuration, or orchestrator feature boundaries, and
+must not be wired as an unattended merge authorization until those gates are implemented.
+The local policy files remain same-user convenience state, not a hostile-process boundary.
 
 ## Hermes profiles
 

@@ -25,7 +25,7 @@ elif endpoint.endswith('/git/ref/heads/main'): result = {'object': {'sha': 'main
 elif endpoint.endswith('/git/ref/heads/dev'):
     if data['dev'] is None:
         print('gh: Not Found (HTTP 404)', file=sys.stderr); sys.exit(1)
-    result = {'object': {'sha': data['dev']}}
+    result = {'object': {'sha': 'wrongsha' if os.environ.get('FORGE_WRONG_DEV_READBACK') == '1' else data['dev']}}
 elif endpoint.endswith('/git/refs') and method == 'POST':
     data['dev'] = 'mainsha'; result = {'ref': 'refs/heads/dev'}
 elif endpoint.endswith('/pulls/7'):
@@ -41,7 +41,9 @@ elif endpoint.endswith('/pulls/7/merge') and method == 'PUT':
     if 'sha=headsha' not in args or 'merge_method=squash' not in args: sys.exit(3)
     data['merged'] = True; result = {'merged': True}
 elif endpoint.endswith('/git/ref/heads/feature/x'): result = {'object': {'sha': 'headsha'}}
-elif endpoint.endswith('/git/refs/heads/feature/x') and method == 'DELETE': result = {'deleted': True}
+elif endpoint.endswith('/git/refs/heads/feature/x') and method == 'DELETE':
+    print('', end='')
+    sys.exit(0)
 else: sys.exit(4)
 state.write_text(json.dumps(data))
 print(json.dumps(result))
@@ -54,6 +56,13 @@ assert_contains "$SANDBOX/state/forge.log" 'refs/heads/dev'
 python3 - "$SANDBOX/state/forge.json" <<'PY'
 import json,sys
 assert json.load(open(sys.argv[1]))['dev']=='mainsha'
+PY
+python3 - "$SANDBOX/state/forge.log" <<'PY'
+from pathlib import Path
+import sys
+lines = Path(sys.argv[1]).read_text().splitlines()
+post = next(i for i, line in enumerate(lines) if '-X POST repos/acme/widget/git/refs' in line)
+assert any('repos/acme/widget/git/ref/heads/dev' in line for line in lines[post + 1:])
 PY
 python3 - "$SANDBOX/state/forge.json" <<'PY'
 import json,sys

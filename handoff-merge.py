@@ -117,6 +117,9 @@ def _gh(method: str, endpoint: str, fields: dict[str, str] | None = None) -> dic
     try:
         result = subprocess.run(argv, check=True, text=True, capture_output=True,
                                 env={**os.environ, "GH_HOST": "github.com", "GIT_TERMINAL_PROMPT": "0"})
+        if not result.stdout.strip() and method == "DELETE":
+            # GitHub returns HTTP 204 for ref deletion; an empty body is success.
+            return {}
         data = json.loads(result.stdout)
     except subprocess.CalledProcessError as exc:
         if "HTTP 404" in (exc.stderr or ""):
@@ -149,6 +152,9 @@ def _bootstrap(slug: str) -> None:
     except MissingRef:
         try:
             _gh("POST", f"repos/{slug}/git/refs", {"ref": "refs/heads/dev", "sha": sha})
+            created = _gh("GET", f"repos/{slug}/git/ref/heads/dev")
+            if created.get("object", {}).get("sha") != sha:
+                raise Refusal("created dev ref did not read back at verified main")
             print(f"created dev at {sha}")
             return
         except Refusal:

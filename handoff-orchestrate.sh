@@ -138,12 +138,15 @@ STATUS="$BASE.status.md"; EVENTS="$BASE.events.log"; LOCK="$BASE.lock"
 BASELINE="$BASE.baseline"; STAGE_FILE="$BASE.stage"; DRIVER_LOG="$BASE.driver.log"
 TICK_FILE="$BASE.tick"
 
-BACKEND_ARG=""; MODEL_ARG=""; PUBLICATION_OWNER="runner"; PUBLICATION_OWNER_ARG=""; _next=""
+BACKEND_ARG=""; MODEL_ARG=""; PUBLICATION_OWNER="runner"; PUBLICATION_OWNER_ARG=""; PUBLICATION_OWNER_SET=0; _next=""
 for a in "${@:3}"; do
   case "$_next" in
     backend) BACKEND_ARG="$a"; _next=""; continue ;;
     model)   MODEL_ARG="$a";   _next=""; continue ;;
-    publication-owner) PUBLICATION_OWNER_ARG="$a"; _next=""; continue ;;
+    publication-owner)
+      PUBLICATION_OWNER_ARG="$a"; PUBLICATION_OWNER_SET=1
+      case "$a" in runner|supervisor) ;; *) die "--publication-owner must be runner or supervisor" ;; esac
+      _next=""; continue ;;
   esac
   case "$a" in
     --backend)   _next=backend ;;
@@ -151,26 +154,42 @@ for a in "${@:3}"; do
     --publication-owner) _next=publication-owner ;;
     --backend=*) BACKEND_ARG="${a#--backend=}" ;;
     --model=*)   MODEL_ARG="${a#--model=}" ;;
-    --publication-owner=*) PUBLICATION_OWNER_ARG="${a#--publication-owner=}" ;;
+    --publication-owner=*)
+      PUBLICATION_OWNER_ARG="${a#--publication-owner=}"; PUBLICATION_OWNER_SET=1
+      case "$PUBLICATION_OWNER_ARG" in runner|supervisor) ;; *) die "--publication-owner must be runner or supervisor" ;; esac
+      ;;
     *) die "unknown flag: $a" ;;
   esac
 done
 [ -z "$_next" ] || die "--$_next needs a value"
-if [ -n "$PUBLICATION_OWNER_ARG" ]; then
-  case "$PUBLICATION_OWNER_ARG" in
-    runner|supervisor) PUBLICATION_OWNER="$PUBLICATION_OWNER_ARG" ;;
-    *) die "--publication-owner must be runner or supervisor, got: $PUBLICATION_OWNER_ARG" ;;
-  esac
-fi
+if [ "$PUBLICATION_OWNER_SET" -eq 1 ]; then PUBLICATION_OWNER="$PUBLICATION_OWNER_ARG"; fi
 case "$CMD" in start|resume|__driver) ;; *)
-  [ -z "$PUBLICATION_OWNER_ARG" ] || die "--publication-owner only applies to start or resume" ;;
+  [ "$PUBLICATION_OWNER_SET" -eq 0 ] || die "--publication-owner only applies to start or resume" ;;
 esac
-PUBLICATION_OWNER_FLAGS=(--publication-owner "$PUBLICATION_OWNER")
 
 # ---------------------------------------------------------------- helpers
 now_s() { date +%s; }
 ts()    { date -d "@$1" '+%F %T'; }
 log_event() { printf '%s %s\n' "$(ts "$(now_s)")" "$1" >>"$EVENTS"; }
+# Recovery trusts only the orchestrator's START/RESUME event, never plan or brief prose.
+# Older event logs without an owner keep the historical runner default.
+recorded_publication_owner() {
+  python3 - "$EVENTS" <<'PY'
+import re, sys
+pattern = re.compile(r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (?:START|RESUME) backend=\S+ model=.* publication-owner=([^ ]*) from ')
+try:
+    lines = open(sys.argv[1], encoding='utf-8').read().splitlines()
+except FileNotFoundError:
+    lines = []
+owner = None
+for line in lines:
+    match = pattern.search(line)
+    if match:
+        owner = match.group(1) or '__empty__'
+if owner is not None:
+    print(owner)
+PY
+}
 fm_scalar() {  # $1 = file with frontmatter, $2 = key -> value or empty
   python3 - "$1" "$2" <<'PY'
 import sys
@@ -262,6 +281,16 @@ eval "$plan_vars"
 PLAN_BRIEFS=()
 for i in $(seq 0 $((PLAN_BRIEF_COUNT-1))); do eval "PLAN_BRIEFS+=(\"\$PLAN_BRIEF_$i\")"; done
 [ "$PLAN_BRIEF_COUNT" -gt 0 ] || die "phase $((PLAN_PHASE_IDX+1)) of the plan lists no briefs"
+if [ "$PUBLICATION_OWNER_SET" -eq 0 ]; then
+  RECORDED_PUBLICATION_OWNER="$(recorded_publication_owner)" || die "could not read recorded publication owner"
+  if [ -n "$RECORDED_PUBLICATION_OWNER" ]; then
+    case "$RECORDED_PUBLICATION_OWNER" in
+      runner|supervisor) PUBLICATION_OWNER="$RECORDED_PUBLICATION_OWNER" ;;
+      *) die "invalid recorded publication owner; refusing to continue: $RECORDED_PUBLICATION_OWNER" ;;
+    esac
+  fi
+fi
+PUBLICATION_OWNER_FLAGS=(--publication-owner "$PUBLICATION_OWNER")
 
 # The plan's backend is the default, --backend overrides. Never auto-detected.
 # A model is passed to the loop only when set: the loop forwards it to EVERY stage.
@@ -961,8 +990,8 @@ break_phase() {  # $1 = reason "kind:field — detail"; $2 = brief
   release_lock
   section=""
   [ -n "$wf" ] && section="### What failed · ${wf%%$'\n'*}"$'\n\n'"$(printf '%s\n' "$wf" | tail -n +2)"$'\n\n'
-  write_status "NEEDS YOU · broken at $where · $reason" "$(printf '## Break\n\n%s\n\n%sBrief: `%s` (handoff: %s). Fix by hand, then exactly one command:\n\n```bash\nhandoff-orchestrate resume %s --backend %s%s\n```' \
-    "$reason" "$section" "${brief:-—}" "$([ -n "$brief" ] && read_brief_state "$brief" || echo —)" "$PLAN_ARG" "$BACKEND" "${MODEL_ARG:+ --model $MODEL_ARG}")"
+  write_status "NEEDS YOU · broken at $where · $reason" "$(printf '## Break\n\n%s\n\n%sBrief: `%s` (handoff: %s). Fix by hand, then exactly one command:\n\n```bash\nhandoff-orchestrate resume %s --backend %s%s --publication-owner %s\n```' \
+    "$reason" "$section" "${brief:-—}" "$([ -n "$brief" ] && read_brief_state "$brief" || echo —)" "$PLAN_ARG" "$BACKEND" "${MODEL_ARG:+ --model $MODEL_ARG}" "$PUBLICATION_OWNER")"
   notify "NEEDS YOU · $PLAN_PHASE_NAME · broken at $where · $reason$([ -n "$wf" ] && printf '\n%s' "$wf")"
   printf 'BREAK: %s\n' "$reason" >&2
   exit 0
@@ -1411,13 +1440,13 @@ stop() {
   fi
   set_plan_orch paused
   release_lock
-  write_status "PAUSED · stopped by hand at $(ts "$(now_s)") · resume: handoff-orchestrate resume $PLAN_ARG --backend $BACKEND"
+  write_status "PAUSED · stopped by hand at $(ts "$(now_s)") · resume: handoff-orchestrate resume $PLAN_ARG --backend $BACKEND --publication-owner $PUBLICATION_OWNER"
   echo "stopped driver $pid; orchestration: paused. Briefs are as the launcher left them."
   if [ -n "$sb" ] && [ "$(read_brief_state "$sb")" = "running" ]; then
     echo "NOTE: $(basename "$sb") is handoff: running — a run was killed mid-way. resume will refuse it until a human"
     echo "      sorts the repo out and sets the brief to ready (re-run) or closed (/debrief reconstructs a dead run)."
   fi
-  echo "resume: handoff-orchestrate resume $PLAN_ARG --backend $BACKEND${MODEL_ARG:+ --model $MODEL_ARG}"
+  echo "resume: handoff-orchestrate resume $PLAN_ARG --backend $BACKEND${MODEL_ARG:+ --model $MODEL_ARG} --publication-owner $PUBLICATION_OWNER"
 }
 
 # ---------------------------------------------------------------- tick
@@ -1438,7 +1467,7 @@ tick() {
     log_event "TICK driver $pid dead with the lock held — watchdog:driver"
     set_plan_orch broken; set_phase_status broken
     release_lock
-    write_status "NEEDS YOU · watchdog:driver — driver $pid died mid-phase" "$(printf '## Break\n\nThe driver process is gone but the phase is not done. Read `%s`, then:\n\n```bash\nhandoff-orchestrate resume %s --backend %s\n```' "$DRIVER_LOG" "$PLAN_ARG" "$BACKEND")"
+    write_status "NEEDS YOU · watchdog:driver — driver $pid died mid-phase" "$(printf '## Break\n\nThe driver process is gone but the phase is not done. Read `%s`, then:\n\n```bash\nhandoff-orchestrate resume %s --backend %s --publication-owner %s\n```' "$DRIVER_LOG" "$PLAN_ARG" "$BACKEND" "$PUBLICATION_OWNER")"
     notify "NEEDS YOU · watchdog:driver — driver $pid died mid-phase"
     exit 0
   fi

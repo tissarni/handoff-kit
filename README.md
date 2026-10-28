@@ -194,7 +194,8 @@ Every Claude stage starts with `ENABLE_CLAUDEAI_MCP_SERVERS=false` and with user
   plan.
 - `--publication-owner` is accepted on `start` and `resume`, defaults to `runner`, and is
   forwarded to each run. In `supervisor` mode the driver also leaves branch and PR
-  publication to the supervisor.
+  publication to the supervisor. Recovery commands carry the selected owner; `tick` and
+  `stop` recover it from the plan's trusted START/RESUME event, not brief or Issue prose.
 - **Exits:** 0 ok, or broke and said so; 1 usage or state error; 2 a pre-flight check failed
   and nothing launched.
 - **Environment:** `HANDOFF_LIMIT_WAIT` (1800 s by default), `HANDOFF_ORCH_ALLOW_CONCURRENT=1`

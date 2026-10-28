@@ -171,23 +171,36 @@ esac
 now_s() { date +%s; }
 ts()    { date -d "@$1" '+%F %T'; }
 log_event() { printf '%s %s\n' "$(ts "$(now_s)")" "$1" >>"$EVENTS"; }
-# Recovery trusts only the orchestrator's START/RESUME event, never plan or brief prose.
-# Older event logs without an owner keep the historical runner default.
+# Recovery trusts only the latest owner-bearing START/RESUME event, never plan or brief prose.
+# Event logs with no owner-bearing record keep the historical runner default.
 recorded_publication_owner() {
   python3 - "$EVENTS" <<'PY'
 import re, sys
-pattern = re.compile(r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (?:START|RESUME) backend=\S+ model=.* publication-owner=([^ ]*) from ')
+action = re.compile(r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (?:START|RESUME)\b')
+has_key = re.compile(r'(?:^|\s)publication-owner\b')
+record = re.compile(
+    r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (?:START|RESUME) '
+    r'backend=(?:claude|hermes|devin) model=.+ publication-owner=(?P<owner>runner|supervisor) '
+    r'from .+ \(handoff: [^)]+\) · baseline [0-9a-f]{7} on [^,\s]+, [0-9]+ dirty paths$'
+)
 try:
     lines = open(sys.argv[1], encoding='utf-8').read().splitlines()
 except FileNotFoundError:
     lines = []
-owner = None
+latest = None
 for line in lines:
-    match = pattern.search(line)
-    if match:
-        owner = match.group(1) or '__empty__'
-if owner is not None:
-    print(owner)
+    if not action.match(line):
+        continue
+    header, separator, _ = line.rpartition(' from ')
+    owner_header = header if separator else line
+    if has_key.search(owner_header):
+        latest = line
+if latest is None:
+    # Genuine owner-absent legacy records retain the historical runner behavior.
+    print('runner')
+else:
+    match = record.fullmatch(latest)
+    print(match.group('owner') if match else '__invalid__')
 PY
 }
 fm_scalar() {  # $1 = file with frontmatter, $2 = key -> value or empty

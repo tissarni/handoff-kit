@@ -159,7 +159,7 @@ def _bootstrap(slug: str) -> None:
     print("dev exists; preserved")
 
 
-def _finalize(slug: str, number: int, head: str, branch: str, policy_repo: str,
+def _finalize(slug: str, number: int, head: str, base: str, branch: str, policy_repo: str,
               task: str, revision: str, risk: str) -> None:
     if Path(slug).is_dir():
         raise Refusal("use owner/name as --repository; local paths are not forge identities")
@@ -173,14 +173,16 @@ def _finalize(slug: str, number: int, head: str, branch: str, policy_repo: str,
         raise Refusal("effective task policy is manual")
     if os.environ.get("HANDOFF_MERGE_HOLD") == "1":
         raise Refusal("a merge hold is active")
-    if not head or not branch or branch in ("main", "dev"):
-        raise Refusal("expected feature branch and head are required")
+    if not head or not base or not branch or branch in ("main", "dev"):
+        raise Refusal("expected feature branch, head and base revision are required")
     pr = _gh("GET", f"repos/{slug}/pulls/{number}")
     if (pr.get("state") != "open" or pr.get("draft") is not False or
             pr.get("base", {}).get("ref") != "dev" or
+            pr.get("base", {}).get("sha") != base or
+            pr.get("base", {}).get("repo", {}).get("full_name", "").lower() != slug.lower() or
             pr.get("head", {}).get("ref") != branch or
             pr.get("head", {}).get("sha") != head or
-            pr.get("base", {}).get("sha") is None or
+            pr.get("mergeable_state") != "clean" or
             pr.get("head", {}).get("repo", {}).get("full_name", "").lower() != slug.lower()):
         raise Refusal("PR is not open, non-draft, exact-head and targeted to dev")
     status = _gh("GET", f"repos/{slug}/commits/{head}/status")
@@ -195,7 +197,9 @@ def _finalize(slug: str, number: int, head: str, branch: str, policy_repo: str,
     if entry["enabled"] is not True or (risk != "ordinary" and approval not in entry.get("overrides", [])) or os.environ.get("HANDOFF_MERGE_HOLD") == "1":
         raise Refusal("task policy or hold changed before merge")
     latest = _gh("GET", f"repos/{slug}/pulls/{number}")
-    if latest.get("head", {}).get("sha") != head or latest.get("base", {}).get("ref") != "dev" or latest.get("state") != "open":
+    if (latest.get("head", {}).get("sha") != head or latest.get("base", {}).get("sha") != base or
+            latest.get("base", {}).get("ref") != "dev" or latest.get("mergeable_state") != "clean" or
+            latest.get("state") != "open"):
         raise Refusal("PR changed after readiness checks")
     try:
         _gh("PUT", f"repos/{slug}/pulls/{number}/merge", {"sha": head, "merge_method": "squash"})
@@ -249,6 +253,7 @@ def main() -> int:
     p.add_argument("--repository", required=True)
     p.add_argument("--pr", required=True, type=int)
     p.add_argument("--head", required=True)
+    p.add_argument("--base", required=True)
     p.add_argument("--branch", required=True)
     p.add_argument("--policy-repo", required=True)
     p.add_argument("--task", required=True)
@@ -260,7 +265,7 @@ def main() -> int:
             _bootstrap(_repo_slug(args.repository))
             return 0
         if args.command == "finalize":
-            _finalize(_repo_slug(args.repository), args.pr, args.head, args.branch,
+            _finalize(_repo_slug(args.repository), args.pr, args.head, args.base, args.branch,
                       args.policy_repo, args.task, args.revision, args.risk)
             return 0
         if args.command == "default-get":

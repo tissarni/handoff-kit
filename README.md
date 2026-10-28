@@ -121,7 +121,7 @@ helper also exposes `dev-bootstrap --repository owner/name` and a narrow `finali
 The bootstrap reads the repository and main ref, creates missing dev from that SHA, and
 preserves an existing dev. Finalization requires `GH_TOKEN`, exact GitHub host, a local
 `--policy-repo`, explicit task identity/revision/risk, and a non-held policy. It requires an
-open, non-draft PR to dev with the exact feature head, successful commit status and completed
+open, non-draft, mergeable PR to dev with the exact feature head and expected base revision, successful commit status and completed
 successful check runs, then requests one squash merge with the expected head SHA, reads the
 PR back, and deletes the remote branch only if its ref still equals that SHA. A lost merge
 response is reconciled by read-back and is never retried. These operations are deterministic

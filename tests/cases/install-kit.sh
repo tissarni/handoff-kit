@@ -48,10 +48,12 @@ OUT="$(inst "$SANDBOX/kit" --vault "$SANDBOX/vault" --defaults "$DEF" --projects
 [ "$RC" -eq 0 ] || fail "step 2: expected exit 0, got $RC: $OUT"
 [ "$(cat "$CFG")" = "VAULT=$SANDBOX/vault
 HANDOFF_DEFAULTS=$DEF
-HANDOFF_PROJECTS=02-projects" ] || fail "step 2: config.env is not the three lines: $(cat "$CFG")"
+HANDOFF_PROJECTS=02-projects
+HANDOFF_AUTO_MERGE=false" ] || fail "step 2: config.env has unexpected values: $(cat "$CFG")"
 for n in handoff-launch handoff-orchestrate brief-check; do
   [ "$(readlink -f "$SANDBOX/home/.local/bin/$n")" = "$SANDBOX/kit/$n.sh" ] || fail "step 2: link $n wrong"
 done
+[ "$(readlink -f "$SANDBOX/home/.local/bin/handoff-policy")" = "$SANDBOX/kit/handoff-merge.py" ] || fail "step 2: policy API link wrong"
 for d in "$SANDBOX/kit"/skills/*/; do
   n="$(basename "$d")"
   [ -z "$(diff -r "$d" "$SANDBOX/home/.claude/skills/$n" 2>&1)" ] || fail "step 2: skill $n differs"
@@ -92,7 +94,8 @@ done
 [ "$(cat "$CFG")" = "EXTRA=kept
 VAULT=$SANDBOX/vault
 HANDOFF_DEFAULTS=$DEF
-HANDOFF_PROJECTS=02-projects" ] || fail "step 4: config.env wrong: $(cat "$CFG")"
+HANDOFF_PROJECTS=02-projects
+HANDOFF_AUTO_MERGE=false" ] || fail "step 4: config.env wrong: $(cat "$CFG")"
 
 # 5. one flag changes one key
 cp "$CFG" "$SANDBOX/cfg4"
@@ -111,5 +114,20 @@ has 'vault not found' "step 6"
 cmp -s "$CFG" "$SANDBOX/cfg5" || fail "step 6: config.env changed"
 OUT="$(inst "$SANDBOX/kit" --bogus 2>&1)"; RC=$?
 [ "$RC" -eq 2 ] || fail "step 6 bogus: exit $RC: $OUT"
+
+# Explicit choices win, and reruns preserve the saved opt-in.
+OUT="$(inst "$SANDBOX/kit" --auto-merge true 2>&1)"; RC=$?
+[ "$RC" -eq 0 ] || fail "auto-merge true: exit $RC: $OUT"
+/usr/bin/grep -qx 'HANDOFF_AUTO_MERGE=true' "$CFG" || fail "explicit true was not saved"
+OUT="$(inst "$SANDBOX/kit" 2>&1)"; RC=$?
+[ "$RC" -eq 0 ] || fail "auto-merge preservation: exit $RC: $OUT"
+/usr/bin/grep -qx 'HANDOFF_AUTO_MERGE=true' "$CFG" || fail "rerun changed saved auto-merge choice"
+cp "$CFG" "$SANDBOX/cfg-before-invalid"
+OUT="$(inst "$SANDBOX/kit" --auto-merge maybe 2>&1)"; RC=$?
+[ "$RC" -eq 1 ] || fail "invalid auto-merge choice: exit $RC: $OUT"
+cmp -s "$CFG" "$SANDBOX/cfg-before-invalid" || fail "invalid auto-merge choice partially changed config"
+OUT="$(inst "$SANDBOX/kit" --auto-merge false 2>&1)"; RC=$?
+[ "$RC" -eq 0 ] || fail "auto-merge false: exit $RC: $OUT"
+/usr/bin/grep -qx 'HANDOFF_AUTO_MERGE=false' "$CFG" || fail "explicit false was not saved"
 
 echo ok

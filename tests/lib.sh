@@ -115,6 +115,8 @@ EOF
   local usage_src="$src"
   [ -f "$usage_src/handoff-usage.py" ] || usage_src="$REPO_ROOT"
   [ -f "$usage_src/handoff-usage.py" ] && cp "$usage_src/handoff-usage.py" "$SANDBOX/kit/handoff-usage.py"
+  local merge_src="$src"
+  [ -f "$merge_src/handoff-merge.py" ] && cp "$merge_src/handoff-merge.py" "$SANDBOX/kit/handoff-merge.py"
   cp -r "$REPO_ROOT/hooks" "$SANDBOX/kit/hooks"
   [ -d "$REPO_ROOT/guards" ] && cp -r "$REPO_ROOT/guards" "$SANDBOX/kit/guards"
   cp -r "$REPO_ROOT/skills" "$SANDBOX/kit/skills"

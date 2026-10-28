@@ -65,12 +65,16 @@ bash install.sh --vault <dir> --defaults <path relative to the vault> --projects
 
 for example `--vault ~/notes --defaults templates/handoff-defaults.yml --projects projects`.
 Add `--hermes-profiles` to also seed the hermes stage profiles (see `## Hermes profiles`).
+On an interactive first install, the installer asks whether to enable repository
+auto-merge by default; unattended first installs choose false. `--auto-merge true|false`
+sets it explicitly. Reruns preserve the saved choice unless that flag is supplied.
 
 It writes, all under `$HOME`:
 
-- `~/.config/handoff/config.env`: `VAULT`, `HANDOFF_DEFAULTS` and `HANDOFF_PROJECTS`; other
+- `~/.config/handoff/config.env`: `VAULT`, `HANDOFF_DEFAULTS`, `HANDOFF_PROJECTS` and
+  `HANDOFF_AUTO_MERGE`; other
   lines are kept;
-- `~/.local/bin/handoff-launch`, `handoff-orchestrate` and `brief-check`: symlinks into
+- `~/.local/bin/handoff-launch`, `handoff-orchestrate`, `brief-check` and `handoff-policy`: symlinks into
   this kit;
 - `~/.claude/skills/<name>/`: each skill under `skills/`, replaced whole;
 - `~/.config/systemd/user/handoff-watchdog@.service` and `.timer`, copied from `systemd/`;
@@ -90,6 +94,31 @@ and `resume` arm each plan's timer. It exits 1 on a refusal and 2 on a bad flag.
   wins and quotes are stripped.
 - `~/.config/handoff/notify.env` holds `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, used by
   a plan with `notify: telegram`.
+
+## Repository merge policy
+
+The shipped installation default is false. An installation default is only a proposal for
+new project initialization; changing it never changes saved repository choices. An
+unconfigured repository stays manual. The companion project initializer can call
+`handoff-policy default-get`, ask the user to confirm that proposed value, then persist the
+answer with `handoff-policy policy-init --repo <git-repository> --choice true|false`.
+Operators can inspect or change an exact repository choice with `policy-get --repo <path>`
+and `policy-set --repo <path> true|false`.
+
+Before a feature starts, a caller can display `effective --repo <path> --task <id>
+--revision <brief-revision> --risk <ordinary|breaking-api|destructive-migration|
+auth-permissions-secrets|deployment-infrastructure|merge-policy|uncertain>`. The result is
+`auto` or `manual`. Risky or uncertain work defaults to manual. An operator may record an
+explicit feature-scoped exception on an opted-in repository with `override --repo <path>
+--task <id> --revision <brief-revision> --risk <risk> --approve`; it applies only to that
+task, revision and risk, and must be recorded before launch. Agent-authored brief text
+cannot create this approval. Turning a repository policy off prevents any task override
+from enabling it. These local files are convenience policy, not an isolation boundary
+against another process running as the same user.
+
+`HANDOFF_AUTO_MERGE` accepts only `true` or `false`; invalid settings fail closed. This
+policy interface is now available to a companion initializer, but it does not itself add
+automatic finalization, forge readiness checks or merge behavior to launcher/orchestrator.
 
 ## Hermes profiles
 

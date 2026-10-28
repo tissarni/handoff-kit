@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drive a phase of handoff briefs end-to-end with no human between gates.
 #
-#   handoff-orchestrate start  <plan> [--backend <b>] [--model <m>]
+#   handoff-orchestrate start  <plan> [--backend <b>] [--model <m>] [--publication-owner runner|supervisor]
 #       Pre-flight, record the repo baseline, take the lock, launch a detached driver
 #       that runs `handoff-launch.sh loop <brief> --gate auto --backend <b>` for every
 #       brief of the current phase, in order. The driver reads the loop's exit code and
@@ -20,7 +20,7 @@
 #   handoff-orchestrate stop   <plan>
 #       Kill the driver and the current stage, mark orchestration: paused, leave the
 #       briefs as the launcher left them. Idempotent.
-#   handoff-orchestrate resume <plan> [--backend <b>] [--model <m>]
+#   handoff-orchestrate resume <plan> [--backend <b>] [--model <m>] [--publication-owner runner|supervisor]
 #       Re-derive everything from disk, record a fresh baseline (the repo after the hand
 #       fix), continue from the first brief not closed, from its current handoff: state.
 #       Exactly one command after a fix at a break. A broken or paused phase whose
@@ -44,11 +44,10 @@
 #   <brief>.failed-<ts>.log · <brief>.killed-<ts>.log   a loop's output when it failed or was killed
 #
 # Branch flow: the plan branch is a feature branch cut from `base:` (plan field;
-# default dev when origin has it, else main). The run stage pushes every commit as it lands
-# and opens the draft PR; after each closed brief the driver pushes whatever the run left
-# unpushed and opens the PR if none is open. start/resume put the repo on the plan branch
-# themselves, cutting it from origin/<base> and pushing it when it does not exist yet — no
-# human creates branches or PRs. The driver never merges and never pushes to a shared
+# default dev when origin has it, else main). With publication owner runner, the run and
+# driver publish the draft PR as before. With supervisor, runs and driver stay local and
+# the supervisor owns later publication. start/resume put the repo on the plan branch,
+# cutting it from origin/<base> when needed. The driver never merges or pushes to a shared
 # branch — a plan whose branch IS one is refused at parse time.
 #
 # Exit codes (read by the skill and by the timer unit):
@@ -139,21 +138,34 @@ STATUS="$BASE.status.md"; EVENTS="$BASE.events.log"; LOCK="$BASE.lock"
 BASELINE="$BASE.baseline"; STAGE_FILE="$BASE.stage"; DRIVER_LOG="$BASE.driver.log"
 TICK_FILE="$BASE.tick"
 
-BACKEND_ARG=""; MODEL_ARG=""; _next=""
+BACKEND_ARG=""; MODEL_ARG=""; PUBLICATION_OWNER="runner"; PUBLICATION_OWNER_ARG=""; _next=""
 for a in "${@:3}"; do
   case "$_next" in
     backend) BACKEND_ARG="$a"; _next=""; continue ;;
     model)   MODEL_ARG="$a";   _next=""; continue ;;
+    publication-owner) PUBLICATION_OWNER_ARG="$a"; _next=""; continue ;;
   esac
   case "$a" in
     --backend)   _next=backend ;;
     --model)     _next=model ;;
+    --publication-owner) _next=publication-owner ;;
     --backend=*) BACKEND_ARG="${a#--backend=}" ;;
     --model=*)   MODEL_ARG="${a#--model=}" ;;
+    --publication-owner=*) PUBLICATION_OWNER_ARG="${a#--publication-owner=}" ;;
     *) die "unknown flag: $a" ;;
   esac
 done
 [ -z "$_next" ] || die "--$_next needs a value"
+if [ -n "$PUBLICATION_OWNER_ARG" ]; then
+  case "$PUBLICATION_OWNER_ARG" in
+    runner|supervisor) PUBLICATION_OWNER="$PUBLICATION_OWNER_ARG" ;;
+    *) die "--publication-owner must be runner or supervisor, got: $PUBLICATION_OWNER_ARG" ;;
+  esac
+fi
+case "$CMD" in start|resume|__driver) ;; *)
+  [ -z "$PUBLICATION_OWNER_ARG" ] || die "--publication-owner only applies to start or resume" ;;
+esac
+PUBLICATION_OWNER_FLAGS=(--publication-owner "$PUBLICATION_OWNER")
 
 # ---------------------------------------------------------------- helpers
 now_s() { date +%s; }
@@ -624,7 +636,7 @@ preflight() {  # $1 = brief
   # 4. branch / tree ⊆ baseline / level with origin
   reason="$(tree_check)" || { printf '%s\n' "$reason"; return 1; }
   # 5. the launcher resolves this brief (intact argv, a known first stage)
-  if ! bash "$LAUNCHER" loop "$brief" --gate auto --backend "$BACKEND" "${MODEL_FLAGS[@]}" --dry-run >/dev/null 2>&1; then
+  if ! bash "$LAUNCHER" loop "$brief" --gate auto --backend "$BACKEND" "${MODEL_FLAGS[@]}" "${PUBLICATION_OWNER_FLAGS[@]}" --dry-run >/dev/null 2>&1; then
     printf 'preflight:dry-run — handoff-launch.sh loop --dry-run failed for %s\n' "$(basename "$brief")"; return 1
   fi
   # 6. a state the loop can start from
@@ -1142,7 +1154,7 @@ launch_driver() {
   cp "$KIT/handoff-launch.sh" "$driver_dir/handoff-launch.sh"
   cp "$KIT/handoff-orchestrate.sh" "$driver_dir/handoff-orchestrate.sh"
   in_new_session env VAULT="$VAULT" HANDOFF_KIT="$KIT" HANDOFF_DEFAULTS="$HANDOFF_DEFAULTS" HANDOFF_PROJECTS="$HANDOFF_PROJECTS" HANDOFF_LAUNCHER="$driver_dir/handoff-launch.sh" \
-    bash "$driver_dir/handoff-orchestrate.sh" __driver "$PLAN_ARG" --backend "$BACKEND" "${MODEL_FLAGS[@]}" \
+    bash "$driver_dir/handoff-orchestrate.sh" __driver "$PLAN_ARG" --backend "$BACKEND" "${MODEL_FLAGS[@]}" "${PUBLICATION_OWNER_FLAGS[@]}" \
     >"$DRIVER_LOG" 2>&1 </dev/null &
   local dpid=$!
   write_lock "$dpid"   # the driver's pid, not this shell's: the tick watches the driver
@@ -1156,7 +1168,7 @@ run_loop() {  # $1 = brief. Runs one loop in its own process group; sets LOOP_RC
   cap="$(mktemp)"
   set +e
   # HANDOFF_BASE: a pre-existing failure is proven against the plan's base, not a guess
-  HANDOFF_BASE="$BASE_BRANCH" in_new_session bash "$LAUNCHER" loop "$1" --gate auto --backend "$BACKEND" "${MODEL_FLAGS[@]}" >"$cap" 2>&1 </dev/null &
+  HANDOFF_BASE="$BASE_BRANCH" in_new_session bash "$LAUNCHER" loop "$1" --gate auto --backend "$BACKEND" "${MODEL_FLAGS[@]}" "${PUBLICATION_OWNER_FLAGS[@]}" >"$cap" 2>&1 </dev/null &
   pid=$!
   write_stage "$1" "$pid"
   wait "$pid"; LOOP_RC=$?
@@ -1234,7 +1246,11 @@ driver() {
       if [ "$LOOP_RC" -eq 0 ]; then
         # the post-run tree check is the orchestrator's, from git
         reason="$(tree_check)" || break_phase "run:tree — ${reason#preflight:tree — }" "$brief"
-        push_branch "$brief"; ensure_pr "$brief"     # backstop
+        if [ "$PUBLICATION_OWNER" = "runner" ]; then
+          push_branch "$brief"; ensure_pr "$brief"     # runner-owned backstop
+        else
+          log_event "PUBLICATION held for supervisor after $(basename "$brief" .md)"
+        fi
         log_event "BRIEF CLOSED $(basename "$brief" .md)"
         write_status "RUNNING · phase $((PLAN_PHASE_IDX+1))/$PLAN_PHASE_COUNT · brief $(brief_pos "$brief")/$PLAN_BRIEF_COUNT $(basename "$brief" .md) · closed"
         notify "phase $((PLAN_PHASE_IDX+1)) · $(basename "$brief" .md) closed ($(brief_pos "$brief")/$PLAN_BRIEF_COUNT)"
@@ -1323,10 +1339,14 @@ ensure_branch() {
   else
     git -C "$REPO" rev-parse --verify -q "origin/$BASE_BRANCH" >/dev/null 2>&1 || die2 "preflight:branch — $WANT_BRANCH exists nowhere and origin/$BASE_BRANCH (the base to cut it from) is missing"
     out="$(git -C "$REPO" checkout -q -b "$WANT_BRANCH" "origin/$BASE_BRANCH" 2>&1)" || die2 "preflight:branch — could not create $WANT_BRANCH from origin/$BASE_BRANCH: $(printf '%s' "$out" | tail -1)"
-    if out="$(git -C "$REPO" push -q -u origin "$WANT_BRANCH" 2>&1)"; then
-      log_event "BRANCH created $WANT_BRANCH from origin/$BASE_BRANCH and pushed (repo was on ${cur:-<detached>})"
+    if [ "$PUBLICATION_OWNER" = "runner" ]; then
+      if out="$(git -C "$REPO" push -q -u origin "$WANT_BRANCH" 2>&1)"; then
+        log_event "BRANCH created $WANT_BRANCH from origin/$BASE_BRANCH and pushed (repo was on ${cur:-<detached>})"
+      else
+        log_event "BRANCH created $WANT_BRANCH from origin/$BASE_BRANCH; push failed, the backstop after brief 1 retries: $(printf '%s' "$out" | tail -1 | cut -c1-120)"
+      fi
     else
-      log_event "BRANCH created $WANT_BRANCH from origin/$BASE_BRANCH; push failed, the backstop after brief 1 retries: $(printf '%s' "$out" | tail -1 | cut -c1-120)"
+      log_event "BRANCH created local $WANT_BRANCH from origin/$BASE_BRANCH; publication owner supervisor"
     fi
   fi
 }
@@ -1372,7 +1392,7 @@ begin() {  # $1 = START|RESUME
      && ! git -C "$REPO" merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD 2>/dev/null; then
     log_event "NOTE base — origin/$BASE_BRANCH has commits $WANT_BRANCH lacks; the run's sync step merges $BASE_BRANCH in before its PR update"
   fi
-  log_event "$1 backend=$BACKEND model=${MODEL_ARG:-<stage defaults>} from $(basename "$first" .md) (handoff: $(read_brief_state "$first")) · baseline $(awk '$1=="head"{print substr($2,1,7)}' "$BASELINE") on $WANT_BRANCH, $(/usr/bin/grep -c '^dirty ' "$BASELINE" || true) dirty paths"
+  log_event "$1 backend=$BACKEND model=${MODEL_ARG:-<stage defaults>} publication-owner=$PUBLICATION_OWNER from $(basename "$first" .md) (handoff: $(read_brief_state "$first")) · baseline $(awk '$1=="head"{print substr($2,1,7)}' "$BASELINE") on $WANT_BRANCH, $(/usr/bin/grep -c '^dirty ' "$BASELINE" || true) dirty paths"
   launch_driver
   arm_watchdog
 }

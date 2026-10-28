@@ -46,11 +46,11 @@ esac
 
 # A FAIL once, then the second close: PASS after a fix-up, or a verdict on the proof
 case "$behavior" in
-  FAIL-fixable-once|FAIL-preexisting-once|FAIL-fixable-pre-once)
+  FAIL-fixable-once|FAIL-preexisting-once|FAIL-fixable-pre-once|FAIL-split-once)
     if [ ! -f "$FAKE_STATE_DIR/fail-once-$STAGE" ]; then
       touch "$FAKE_STATE_DIR/fail-once-$STAGE"
       behavior="${behavior%-once}"
-    elif [ "$behavior" = "FAIL-fixable-once" ]; then
+    elif [ "$behavior" = "FAIL-fixable-once" ] || [ "$behavior" = "FAIL-split-once" ]; then
       behavior=PASS
     else
       behavior=judge-proof
@@ -238,7 +238,16 @@ CLASS: accept?" ;;
         FAIL-fixable) v=FAIL; f="- §4.1 fake criterion — refuted — fake evidence: exit 1"; class_line="
 CLASS: fixable" ;;
         FAIL-mixed) v=FAIL; f="- §4.1 fake criterion — refuted — fake evidence: exit 1
-- the report — refuted. fake evidence"; class_line="
+- the report — refuted — fake evidence"; class_line="
+CLASS: fixable" ;;
+        FAIL-mixed-verdict) v=FAIL; f="- §4.1 branch observation — confirmed — branch matches; timing claim — unconfirmed — needs evidence"; class_line="
+CLASS: fixable" ;;
+        FAIL-split) v=FAIL; f="- §4.1 branch observation — confirmed — the expected branch is present
+- §4.2 timing claim — unconfirmed — no timing evidence was recorded"; class_line="
+CLASS: fixable" ;;
+        FAIL-unmapped) v=FAIL; f="- report honesty and security scope — unconfirmed — no supporting evidence was recorded"; class_line="
+CLASS: fixable" ;;
+        FAIL-archived-mix) v=FAIL; f="- branch observation and timing — confirmed — the branch is present, but timing remains unconfirmed because no timing evidence was recorded"; class_line="
 CLASS: fixable" ;;
         FAIL-unprefixed) v=FAIL; f="- the PR description — refuted — fake evidence"; class_line="
 CLASS: fixable" ;;

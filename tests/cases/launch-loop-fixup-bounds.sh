@@ -63,7 +63,7 @@ FAKE_CLAUDE="close=FAIL-mixed"
 OUT="$(launch loop "$BRIEF" --gate auto --backend claude 2>&1)"; RC=$?
 [ "$RC" -eq 20 ] || fail "mixed: expected exit 20, got $RC. Output:
 $OUT"
-printf '%s\n' "$OUT" | /usr/bin/grep -qxF 'fix-up: no — a failing finding is not on a §4 item: - the report — refuted. fake evidence' \
+printf '%s\n' "$OUT" | /usr/bin/grep -qxF 'fix-up: no — a failing finding is not on a §4 item: - the report — refuted — fake evidence' \
   || fail "mixed: no reason line. Output:
 $OUT"
 [ "$(resumes fx5)" = 0 ] || fail "mixed: expected no resume, got $(resumes fx5)"

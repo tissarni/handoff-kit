@@ -175,19 +175,26 @@ Every Claude stage starts with `ENABLE_CLAUDEAI_MCP_SERVERS=false` and with user
   - `lesson <brief> --note <file>` and `resume <brief> --session <id> --note <file>`.
 - **Flags:** `--gate auto|human` (loop), `--dry-run`, `--delegate`, `--stream` (review),
   `--prove N[,N…]` (close; the loop passes it), `--backend claude|hermes|devin` and
-  `--model`.
+  `--model`, and `--publication-owner runner|supervisor` (run, loop and resume; defaults
+  to `runner`). `runner` preserves the existing forge-specific push and draft-PR workflow.
+  `supervisor` keeps the run local-only; the run and orchestrator do not publish a branch
+  or create/update a PR, and the trusted supervisor owns later publication. Brief or Issue
+  prose cannot grant publication credentials or merge authority.
 - **Loop exits:** 0 closed; 10 gate held, with `GATE: …`; 20 the run failed the check, with
   `RUN: …`; 30 launcher error.
 - **Environment:** `HANDOFF_ALLOW_FREE_RUN=1`, `HANDOFF_DONE_WHEN_TIMEOUT=<s>` (600 by
   default), `HANDOFF_BASE=<branch>` and `HANDOFF_KIT`.
 
-### `handoff-orchestrate start|tick|status|stop|resume <plan> [--backend <b>] [--model <m>]`
+### `handoff-orchestrate start|tick|status|stop|resume <plan> [--backend <b>] [--model <m>] [--publication-owner runner|supervisor]`
 
 - `start` runs the pre-flight, records the repo baseline, takes the lock and launches a
   detached driver. `tick` is the watchdog pass, `status` prints the first line of
   `<plan>.status.md`, `stop` kills the driver and marks the plan paused, `resume` continues
   from the first brief not closed. The header of the script lists the files kept beside a
   plan.
+- `--publication-owner` is accepted on `start` and `resume`, defaults to `runner`, and is
+  forwarded to each run. In `supervisor` mode the driver also leaves branch and PR
+  publication to the supervisor.
 - **Exits:** 0 ok, or broke and said so; 1 usage or state error; 2 a pre-flight check failed
   and nothing launched.
 - **Environment:** `HANDOFF_LIMIT_WAIT` (1800 s by default), `HANDOFF_ORCH_ALLOW_CONCURRENT=1`

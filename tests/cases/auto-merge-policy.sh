@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -uo pipefail
+set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/../lib.sh"
 sandbox_init
@@ -17,22 +17,23 @@ assert_eq "$OUT" manual
 HOME="$SANDBOX/home" python3 "$helper" default-set true
 HOME="$SANDBOX/home" python3 "$helper" default-get | /usr/bin/grep -qx true
 cp "$SANDBOX/home/.config/handoff/config.env" "$SANDBOX/default.good"
-OUT="$(HOME="$SANDBOX/home" python3 "$helper" default-set yes 2>&1)"; RC=$?
+if OUT="$(HOME="$SANDBOX/home" python3 "$helper" default-set yes 2>&1)"; then RC=0; else RC=$?; fi
 [ "$RC" -ne 0 ] || fail "invalid installation default was accepted"
 cmp -s "$SANDBOX/default.good" "$SANDBOX/home/.config/handoff/config.env" || fail "invalid default partially changed config"
 HOME="$SANDBOX/home" python3 "$helper" policy-get --repo "$repo_a" | /usr/bin/grep -qx 'manual'
 HOME="$SANDBOX/home" python3 "$helper" policy-init --repo "$repo_a" --choice true
 HOME="$SANDBOX/home" python3 "$helper" policy-set --repo "$repo_b" false
-OUT="$(HOME="$SANDBOX/home" python3 "$helper" override --repo "$repo_b" --task task-b --revision rev-1 --risk ordinary --approve 2>&1)"; RC=$?
-[ "$RC" -ne 0 ] || fail "task approval elevated a manual repository policy"
+if HOME="$SANDBOX/home" python3 "$helper" override --repo "$repo_b" --task task-b --revision rev-1 --risk ordinary --approve 2>&1; then
+  fail "task approval elevated a manual repository policy"
+fi
 HOME="$SANDBOX/home" python3 "$helper" effective --repo "$repo_a" --task task-a --revision rev-1 --risk ordinary | /usr/bin/grep -qx 'auto'
 HOME="$SANDBOX/home" python3 "$helper" effective --repo "$repo_b" --task task-b --revision rev-1 --risk ordinary | /usr/bin/grep -qx 'manual'
-HOME="$SANDBOX/home" python3 "$helper" override --repo "$repo_b" --task task-b --revision rev-1 --risk ordinary --approve
-HOME="$SANDBOX/home" python3 "$helper" effective --repo "$repo_b" --task task-b --revision rev-1 --risk ordinary | /usr/bin/grep -qx 'auto'
-HOME="$SANDBOX/home" python3 "$helper" effective --repo "$repo_b" --task task-c --revision rev-1 --risk ordinary | /usr/bin/grep -qx 'manual'
-HOME="$SANDBOX/home" python3 "$helper" effective --repo "$repo_b" --task task-b --revision rev-1 --risk breaking-api | /usr/bin/grep -qx 'manual'
 HOME="$SANDBOX/home" python3 "$helper" policy-set --repo "$repo_b" true
+HOME="$SANDBOX/home" python3 "$helper" override --repo "$repo_b" --task task-b --revision rev-1 --risk uncertain --approve
+HOME="$SANDBOX/home" python3 "$helper" effective --repo "$repo_b" --task task-b --revision rev-1 --risk uncertain | /usr/bin/grep -qx 'auto'
+HOME="$SANDBOX/home" python3 "$helper" effective --repo "$repo_b" --task task-c --revision rev-1 --risk uncertain | /usr/bin/grep -qx 'manual'
+HOME="$SANDBOX/home" python3 "$helper" effective --repo "$repo_b" --task task-b --revision rev-1 --risk breaking-api | /usr/bin/grep -qx 'manual'
 HOME="$SANDBOX/home" python3 "$helper" override --repo "$repo_b" --task task-b --revision rev-1 --risk breaking-api --approve
 HOME="$SANDBOX/home" python3 "$helper" effective --repo "$repo_b" --task task-b --revision rev-1 --risk breaking-api | /usr/bin/grep -qx 'auto'
-HOME="$SANDBOX/home" python3 "$helper" effective --repo "$repo_b" --task task-b --revision rev-2 --risk ordinary | /usr/bin/grep -qx 'manual'
+HOME="$SANDBOX/home" python3 "$helper" effective --repo "$repo_b" --task task-b --revision rev-2 --risk breaking-api | /usr/bin/grep -qx 'manual'
 printf '%s\n' 'auto-merge policy isolation and scoped override passed'

@@ -33,6 +33,7 @@ if [ -n "${FAKE_CLAUDE:-}" ]; then
   for p in "${_pairs[@]}"; do
     k="${p%%=*}"; v="${p#*=}"
     [ "$k" = "$STAGE" ] && behavior="$v"
+    [ "$k" = "$STAGE@$BRIEF_BASE" ] && behavior="$v"
   done
 fi
 case "$STAGE" in
@@ -156,14 +157,38 @@ else
       review_base="$(printf '%s\n' "$PROMPT" | /usr/bin/grep -oE 'base: [0-9a-f]{40}' | /usr/bin/grep -oE '[0-9a-f]{40}' | head -1)"
       case "$behavior" in
         PASS) review_verdict=PASS; blockers=none ;;
+        no-block) STDOUT_TEXT="review completed without a final block" ;;
+        two-block)
+          STDOUT_TEXT="FINAL REVIEW
+verdict: FAIL
+head: $review_head
+base: $review_base
+blockers: fake blocker
+END FINAL REVIEW
+FINAL REVIEW
+verdict: FAIL
+head: $review_head
+base: $review_base
+blockers: fake blocker
+END FINAL REVIEW" ;;
+        wrong-head) review_verdict=PASS; review_head=0000000000000000000000000000000000000000; blockers=none ;;
+        wrong-base) review_verdict=PASS; review_base=0000000000000000000000000000000000000000; blockers=none ;;
+        blockers) review_verdict=PASS; blockers="found blocker" ;;
+        move-head)
+          printf 'review mutation\n' >"$PWD/final-review-mutation.txt"
+          git -c user.name=test -c user.email=test@example.invalid add final-review-mutation.txt
+          git -c user.name=test -c user.email=test@example.invalid commit -q -m "test: review mutation"
+          review_verdict=PASS; blockers=none ;;
         *) review_verdict=FAIL; blockers="fake blocker" ;;
       esac
-      STDOUT_TEXT="FINAL REVIEW
+      if [ "$behavior" != "no-block" ] && [ "$behavior" != "two-block" ]; then
+        STDOUT_TEXT="FINAL REVIEW
 verdict: $review_verdict
 head: $review_head
 base: $review_base
 blockers: $blockers
 END FINAL REVIEW"
+      fi
       TRANSCRIPT_TEXT="$STDOUT_TEXT"
       ;;
     review)

@@ -401,12 +401,16 @@ PY
     claude)
       [ -n "$CLAUDE_BIN" ] || review_status="claude not found"
       export "${HEADLESS_ENV[@]}" ENABLE_CLAUDEAI_MCP_SERVERS=false
-      review_settings="$(claude_stage_settings "$review_repo" "$KIT/guards/no-background-wait.py")"
-      review_settings_file="$(mktemp)"
-      printf '%s' "$review_settings" >"$review_settings_file"
+      review_settings_all="$(claude_stage_settings "$review_repo" "$KIT/guards/no-background-wait.py")"
+      review_settings="$(printf '%s\n' "$review_settings_all" | sed -n '1p')"
+      review_settings_args=()
+      if [ -n "$review_settings" ]; then
+        review_settings_file="$(mktemp)"
+        printf '%s' "$review_settings" >"$review_settings_file"
+        review_settings_args=(--settings "$review_settings_file")
+      fi
       review_session_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-      export "${HEADLESS_ENV[@]}" ENABLE_CLAUDEAI_MCP_SERVERS=false
-      review_cmd=("$CLAUDE_BIN" -p --settings "$review_settings_file" --permission-mode bypassPermissions --disallowedTools "Edit,Write,NotebookEdit,$HEADLESS_DENY,Bash(git push*),Bash(git commit*),Bash(git checkout*),Bash(git switch*),Bash(git merge*),Bash(gh *),Bash(glab *)" --name final-review --session-id "$review_session_id" -- "$review_prompt") ;;
+      review_cmd=("$CLAUDE_BIN" -p "${review_settings_args[@]}" --permission-mode bypassPermissions --disallowedTools "Edit,Write,NotebookEdit,$HEADLESS_DENY,Bash(git push*),Bash(git commit*),Bash(git checkout*),Bash(git switch*),Bash(git merge*),Bash(gh *),Bash(glab *)" --name final-review --session-id "$review_session_id" -- "$review_prompt") ;;
     devin)
       [ -n "$DEVIN_BIN" ] || review_status="devin not found"
       review_cmd=("$DEVIN_BIN" --permission-mode dangerous --respect-workspace-trust false -p -- "$review_prompt") ;;

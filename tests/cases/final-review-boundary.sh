@@ -54,6 +54,25 @@ last_closed="$(printf '%s\n' "$closed_lines" | tail -1)"
 [ "$pass_line" -gt "$last_closed" ] || fail "final review was logged before both BRIEF CLOSED events"
 assert_file "${PLAN%.md}.final-review.json"
 
+# An auto-policy plan cannot review after only its first phase has completed.
+PARTIAL_A="$(make_brief testsub partial-a.md draft)"
+PARTIAL_B="$(make_brief testsub partial-b.md draft)"
+PARTIAL_PLAN="$(dirname "$PARTIAL_A")/partial-plan.md"
+make_plan "$PARTIAL_PLAN" "$PARTIAL_A" "$PARTIAL_B"
+python3 - "$PARTIAL_PLAN" <<'PY'
+import sys
+p=sys.argv[1]
+s=open(p, encoding='utf-8').read().replace('  - name: phase one\n    briefs: [partial-a.md, partial-b.md]\n    status: pending', '  - name: phase one\n    briefs: [partial-a.md]\n    status: pending\n  - name: phase two\n    briefs: [partial-b.md]\n    status: pending')
+s=s.replace('| 1 | test | partial-a.md, partial-b.md | last phase |', '| 1 | test | partial-a.md | next phase |\n| 2 | test | partial-b.md | last phase |')
+open(p, 'w', encoding='utf-8').write(s)
+PY
+FAKE_CLAUDE="run=complete"
+orch start "$PARTIAL_PLAN" --backend claude >/dev/null 2>&1
+partial_wait() { /usr/bin/grep -q '^orchestration: phase-done' "$PARTIAL_PLAN" 2>/dev/null; }
+wait_for 90 partial_wait || fail "phase one did not finish in two-phase plan"
+[ "$(state_of "$PARTIAL_A")" = closed ] || fail "phase one did not complete"
+[ "$(count_final)" -eq 3 ] || fail "final review ran after phase one but before phase two completed"
+
 MANUAL_BRIEF="$(make_brief testsub manual-brief.md draft)"
 MANUAL_PLAN="$(dirname "$ORCH_A")/manual-plan.md"
 make_plan "$MANUAL_PLAN" "$MANUAL_BRIEF"
@@ -63,5 +82,18 @@ manual_done() { /usr/bin/grep -q '^orchestration: done' "$MANUAL_PLAN" 2>/dev/nu
 wait_for 90 manual_done || fail "manual-policy plan did not complete"
 [ "$(count_final)" -eq 3 ] || fail "manual policy invoked final reviewer"
 assert_no_file "${MANUAL_PLAN%.md}.final-review.json"
+
+# A failed second brief run is not a completed phase and must not be reviewed.
+FAILED_A="$(make_brief testsub failed-a.md draft)"
+FAILED_B="$(make_brief testsub failed-b.md draft)"
+FAILED_PLAN="$(dirname "$FAILED_A")/failed-plan.md"
+make_plan "$FAILED_PLAN" "$FAILED_A" "$FAILED_B"
+FAKE_CLAUDE="run=complete,run@failed-b=no-report"
+orch start "$FAILED_PLAN" --backend claude >/dev/null 2>&1
+failed_phase_wait() { /usr/bin/grep -q '^NEEDS YOU · broken at failed-b · run:' "${FAILED_PLAN%.md}.status.md" 2>/dev/null; }
+wait_for 90 failed_phase_wait || fail "first brief did not close before second brief run failed"
+[ "$(state_of "$FAILED_A")" = closed ] && [ "$(state_of "$FAILED_B")" = running ] || fail "second brief did not fail after the first closed"
+[ "$(count_final)" -eq 3 ] || fail "final review ran after failed second-phase run"
+unset FAKE_CLAUDE
 
 echo ok

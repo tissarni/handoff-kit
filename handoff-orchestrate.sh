@@ -1347,7 +1347,31 @@ phase_done() {
   log_event "PHASE DONE $((PLAN_PHASE_IDX+1)) — $PLAN_PHASE_NAME"
   # the last phase closes the plan: `done`, not `phase-done` (the status skill's
   # "review and merge the PR" step keys on it)
-  if [ $((PLAN_PHASE_IDX+1)) -ge "$PLAN_PHASE_COUNT" ]; then set_plan_orch done; else set_plan_orch phase-done; fi
+  if [ $((PLAN_PHASE_IDX+1)) -ge "$PLAN_PHASE_COUNT" ]; then
+    merge_helper="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-merge.py"
+    merge_policy="$(python3 "$merge_helper" policy-get --repo "$REPO" 2>/dev/null || true)"
+    if [ "$merge_policy" = "auto" ]; then
+      review_head="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
+      base_ref="origin/$BASE_BRANCH"
+      review_base="$(git -C "$REPO" merge-base HEAD "$base_ref" 2>/dev/null || true)"
+      if [ -z "$review_base" ]; then
+        log_event "FINAL REVIEW FAIL ${review_head:0:7} — base unavailable: $base_ref"
+      else
+        review_out=""
+        review_rc=0
+        review_out="$(bash "$KIT/handoff-launch.sh" final-review "$PLAN" --head "$review_head" --base "$review_base" --backend "$BACKEND" 2>&1)" || review_rc=$?
+        if [ "$review_rc" -eq 0 ]; then
+          log_event "FINAL REVIEW PASS ${review_head:0:7}"
+        else
+          review_reason="$(printf '%s\n' "$review_out" | tail -1 | sed 's/^.* — //')"
+          log_event "FINAL REVIEW FAIL ${review_head:0:7} — ${review_reason:-reviewer failed}"
+        fi
+      fi
+    fi
+    set_plan_orch done
+  else
+    set_plan_orch phase-done
+  fi
   set_phase_status done
   release_lock
   # the plan is finished with its checkout: drop the checkout lock, only if it is ours

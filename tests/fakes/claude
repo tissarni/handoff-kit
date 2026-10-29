@@ -41,6 +41,7 @@ case "$STAGE" in
   run)     behavior="${behavior:-complete}" ;;
   close)   behavior="${behavior:-PASS}" ;;
   debrief) behavior="${behavior:-closed}" ;;
+  final-review) behavior="${behavior:-PASS}" ;;
   *)       behavior="${behavior:-complete}" ;;
 esac
 
@@ -150,6 +151,21 @@ if [ "$behavior" = "limit" ]; then
   EXIT=1
 else
   case "$STAGE" in
+    final-review)
+      review_head="$(printf '%s\n' "$PROMPT" | /usr/bin/grep -oE 'head: [0-9a-f]{40}' | /usr/bin/grep -oE '[0-9a-f]{40}' | head -1)"
+      review_base="$(printf '%s\n' "$PROMPT" | /usr/bin/grep -oE 'base: [0-9a-f]{40}' | /usr/bin/grep -oE '[0-9a-f]{40}' | head -1)"
+      case "$behavior" in
+        PASS) review_verdict=PASS; blockers=none ;;
+        *) review_verdict=FAIL; blockers="fake blocker" ;;
+      esac
+      STDOUT_TEXT="FINAL REVIEW
+verdict: $review_verdict
+head: $review_head
+base: $review_base
+blockers: $blockers
+END FINAL REVIEW"
+      TRANSCRIPT_TEXT="$STDOUT_TEXT"
+      ;;
     review)
       case "$behavior" in
         RUN) verdict=RUN ;; REVISE) verdict=REVISE ;; REWRITE) verdict=REWRITE ;; *) verdict=RUN ;;

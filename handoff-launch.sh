@@ -253,6 +253,9 @@ fi
 # ---------------------------------------------------------------- args
 MODE="${1:-}"
 BRIEF_ARG="${2:-}"
+HEAD_ARG=""
+BASE_ARG=""
+FEATURE_COMPLETE=0
 DRY=0
 STREAM=0
 DELEGATE=0
@@ -282,6 +285,8 @@ for a in "${@:3}"; do
       _next=""; continue ;;
     gate)    GATE_ARG="$a"; _next=""; continue ;;
     prove)   PROVE="$a"; _next=""; continue ;;
+    head)    HEAD_ARG="$a"; _next=""; continue ;;
+    base)    BASE_ARG="$a"; _next=""; continue ;;
   esac
   case "$a" in
     --dry-run)  DRY=1 ;;
@@ -293,7 +298,10 @@ for a in "${@:3}"; do
     --model)    _next=model ;;
     --publication-owner) _next=publication-owner ;;
     --gate)     _next=gate ;;
-    --prove)    _next=prove ;;
+    --prove)   _next=prove ;;
+    --head)    _next=head ;;
+    --base)    _next=base ;;
+    --feature-complete) FEATURE_COMPLETE=1 ;;
     --backend=*) BACKEND_ARG="${a#--backend=}"; PASS+=(--backend "$BACKEND_ARG") ;;
     --model=*)   MODEL_ARG="${a#--model=}";     PASS+=(--model "$MODEL_ARG") ;;
     --publication-owner=*)
@@ -320,6 +328,18 @@ fi
 if [ -n "$PROVE" ]; then
   [ "$MODE" = "close" ] || die "--prove only applies to close (got mode $MODE)"
   [[ "$PROVE" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "--prove takes §4 item numbers, e.g. 2,5 — got: $PROVE"
+fi
+if [ "$FEATURE_COMPLETE" = "1" ] && [ "$MODE" != "loop" ]; then
+  die "--feature-complete only applies to loop (got mode $MODE)"
+fi
+if [ "$MODE" = "final-review" ]; then
+  [ -n "$BRIEF_ARG" ] || die "no plan or brief given"
+  [ -n "$HEAD_ARG" ] && [ -n "$BASE_ARG" ] || die "final-review requires --head <sha> and --base <sha>"
+  final_review="$KIT/handoff-final-review.py"
+  [ -f "$final_review" ] || die "final-review helper is missing: $final_review"
+  review_args=("$BRIEF_ARG" --head "$HEAD_ARG" --base "$BASE_ARG")
+  [ -n "$BACKEND_ARG" ] && review_args+=(--backend "$BACKEND_ARG")
+  exec python3 "$final_review" "${review_args[@]}"
 fi
 
 # ---------------------------------------------------------------- backend
@@ -352,7 +372,7 @@ if [ "$BACKEND" = "hermes" ]; then
 fi
 
 case "$MODE" in
-  review|run|close|loop) ;;
+  review|run|close|loop|final-review) ;;
   revise|debrief) DELEGATE=1 ;;
   lesson)
     [ -n "$NOTE_FILE" ] || die "lesson needs --note <file>"
@@ -368,6 +388,7 @@ case "$MODE" in
   *) die "usage: handoff-launch review|run|close|revise|debrief|loop|resume|lesson <brief> [...]" ;;
 esac
 [ -n "$BRIEF_ARG" ] || die "no brief given"
+
 
 # Roots: the vault, its defaults file (relative to the vault) and its projects directory.
 # Each comes from the environment, else from the per-user config file, which is read line
@@ -1058,6 +1079,29 @@ EOF
         else
           printf '\nLOOP COMPLETE — %s is closed. Report and debrief outcome: %s\n' "$(basename "$BRIEF")" "$OUT_REPORT"
           printf 'Run check (informational under --gate human): %s\n' "$verdict"
+        fi
+        if [ "$FEATURE_COMPLETE" = "1" ]; then
+          head_sha="$(git -C "$BRIEF_REPO" rev-parse HEAD 2>/dev/null || true)"
+          base_branch="${HANDOFF_BASE:-}"
+          if [ -z "$base_branch" ]; then
+            if git -C "$BRIEF_REPO" rev-parse --verify -q origin/dev >/dev/null 2>&1; then base_branch=dev; else base_branch=main; fi
+          fi
+          base_ref="origin/$base_branch"
+          base_sha="$(git -C "$BRIEF_REPO" merge-base HEAD "$base_ref" 2>/dev/null || true)"
+          if [ -z "$base_sha" ]; then
+            printf 'FINAL REVIEW FAIL %s — base unavailable: %s\n' "${head_sha:0:7}" "$base_ref"
+            exit 1
+          fi
+          review_out=""
+          review_rc=0
+          review_out="$(python3 "$KIT/handoff-final-review.py" "$BRIEF" --head "$head_sha" --base "$base_sha" --backend "$BACKEND" 2>&1)" || review_rc=$?
+          if [ "$review_rc" -eq 0 ]; then
+            printf 'FINAL REVIEW PASS %s\n' "${head_sha:0:7}"
+          else
+            reason="$(printf '%s\n' "$review_out" | tail -1 | sed 's/^.* — //')"
+            printf 'FINAL REVIEW FAIL %s — %s\n' "${head_sha:0:7}" "${reason:-reviewer failed}"
+            exit 1
+          fi
         fi
         exit 0 ;;
       running)

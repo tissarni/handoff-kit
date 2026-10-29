@@ -111,6 +111,7 @@ EOF
   local src="${HANDOFF_SCRIPTS_DIR:-$REPO_ROOT}"
   mkdir -p "$SANDBOX/kit"
   cp "$src/handoff-launch.sh" "$SANDBOX/kit/handoff-launch.sh"
+  [ -f "$src/handoff-final-review.py" ] && cp "$src/handoff-final-review.py" "$SANDBOX/kit/handoff-final-review.py"
   cp "$src/handoff-orchestrate.sh" "$SANDBOX/kit/handoff-orchestrate.sh"
   local usage_src="$src"
   [ -f "$usage_src/handoff-usage.py" ] || usage_src="$REPO_ROOT"

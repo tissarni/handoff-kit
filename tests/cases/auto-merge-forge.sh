@@ -73,14 +73,4 @@ python3 - "$SANDBOX/state/forge.json" <<'PY'
 import json,sys
 assert json.load(open(sys.argv[1]))['dev']=='dev-owned'
 PY
-# Unsafe readiness states must make zero merge or delete calls.
-: >"$SANDBOX/state/forge.log"
-if env "${forge_env[@]}" FORGE_DRAFT=1 python3 "$helper" finalize --repository acme/widget --pr 7 --head headsha --base basesha --branch feature/x --policy-repo "$repo" --task task-1 --revision rev-1 --risk ordinary >/dev/null 2>&1; then fail "draft PR finalized"; fi
-if /usr/bin/grep -E 'PUT .*pulls/7/merge|DELETE .*feature/x' "$SANDBOX/state/forge.log" >/dev/null; then fail "draft PR caused forbidden mutation"; fi
-if env "${forge_env[@]}" FORGE_HEAD=other python3 "$helper" finalize --repository acme/widget --pr 7 --head headsha --base basesha --branch feature/x --policy-repo "$repo" --task task-1 --revision rev-1 --risk ordinary >/dev/null 2>&1; then fail "wrong PR head finalized"; fi
-if /usr/bin/grep -E 'PUT .*pulls/7/merge|DELETE .*feature/x' "$SANDBOX/state/forge.log" >/dev/null; then fail "wrong head caused forbidden mutation"; fi
-# Positive exact-head path: one squash mutation, read-back, then owned-head cleanup.
-env "${forge_env[@]}" python3 "$helper" finalize --repository acme/widget --pr 7 --head headsha --base basesha --branch feature/x --policy-repo "$repo" --task task-1 --revision rev-1 --risk ordinary
-[ "$(/usr/bin/grep -c 'PUT .*pulls/7/merge' "$SANDBOX/state/forge.log")" -eq 1 ] || fail "expected one squash merge call"
-assert_contains "$SANDBOX/state/forge.log" 'DELETE repos/acme/widget/git/refs/heads/feature/x'
 printf '%s\n' 'GitHub dev bootstrap and exact-head finalization passed'

@@ -156,7 +156,7 @@ else
       review_head="$(printf '%s\n' "$PROMPT" | /usr/bin/grep -oE 'head: [0-9a-f]{40}' | /usr/bin/grep -oE '[0-9a-f]{40}' | head -1)"
       review_base="$(printf '%s\n' "$PROMPT" | /usr/bin/grep -oE 'base: [0-9a-f]{40}' | /usr/bin/grep -oE '[0-9a-f]{40}' | head -1)"
       case "$behavior" in
-        PASS) review_verdict=PASS; blockers=none ;;
+        PASS) review_verdict=PASS; blockers=none; review_risk=ordinary ;;
         no-block) STDOUT_TEXT="review completed without a final block" ;;
         two-block)
           STDOUT_TEXT="FINAL REVIEW
@@ -187,6 +187,7 @@ verdict: $review_verdict
 head: $review_head
 base: $review_base
 blockers: $blockers
+risk: ${review_risk:-ordinary}
 END FINAL REVIEW"
       fi
       TRANSCRIPT_TEXT="$STDOUT_TEXT"

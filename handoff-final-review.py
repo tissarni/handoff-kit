@@ -9,9 +9,11 @@ import time
 from pathlib import Path
 
 HEX = re.compile(r"^[0-9a-fA-F]{40}$")
+VALID_RISKS = {"ordinary", "breaking-api", "destructive-migration", "auth-permissions-secrets",
+               "deployment-infrastructure", "merge-policy", "uncertain"}
 BLOCK = re.compile(
     r"(?m)^FINAL REVIEW\nverdict: (PASS|FAIL)\nhead: ([0-9a-fA-F]{40})\n"
-    r"base: ([0-9a-fA-F]{40})\nblockers: ([^\r\n]+)\nEND FINAL REVIEW$"
+    r"base: ([0-9a-fA-F]{40})\nblockers: ([^\r\n]+)\nrisk: ([^\r\n]+)\nEND FINAL REVIEW$"
 )
 
 
@@ -130,8 +132,9 @@ def prepare(argv):
     if evidence.is_file():
         try:
             old = json.loads(evidence.read_text(encoding="utf-8"))
-            if all(old.get(k) == v for k, v in (("feature", str(feature)), ("repo", str(repo)),
-                                                 ("head", head.lower()), ("base", base.lower()))):
+            if (all(old.get(k) == v for k, v in (("feature", str(feature)), ("repo", str(repo)),
+                                                  ("head", head.lower()), ("base", base.lower())))
+                    and old.get("risk") in VALID_RISKS):
                 print(json.dumps({"reuse": True, "record": old}))
                 return 0
         except (OSError, ValueError):
@@ -164,7 +167,7 @@ def record(argv):
         # The evidence target may still be resolvable from the feature path.
         return fail(str(exc))
     record = {"feature": str(feature), "repo": str(repo), "head": head.lower(), "base": base.lower(),
-              "verdict": "FAIL", "blockers": "", "backend": backend, "created": int(time.time())}
+              "verdict": "FAIL", "blockers": "", "risk": "", "backend": backend, "created": int(time.time())}
     reason = ""
     if status:
         if status.startswith("timeout:"):
@@ -183,13 +186,14 @@ def record(argv):
         if not reason and len(matches) != 1:
             reason = "expected exactly one FINAL REVIEW block"
         if not reason:
-            verdict, got_head, got_base, blockers = matches[0].groups()
+            verdict, got_head, got_base, blockers, risk = matches[0].groups()
             if git_head(repo) != head.lower(): reason = "repo HEAD moved during review"
             elif got_head.lower() != head.lower(): reason = "review head mismatch"
             elif got_base.lower() != base.lower(): reason = "review base mismatch"
             elif verdict != "PASS": reason = "review verdict FAIL"
             elif blockers != "none": reason = "review blockers present"
-            else: record.update(verdict="PASS", blockers="none")
+            elif risk not in VALID_RISKS: reason = "invalid review risk"
+            else: record.update(verdict="PASS", blockers="none", risk=risk)
     if reason:
         record["reason"] = reason
     atomic_json(evidence, record)

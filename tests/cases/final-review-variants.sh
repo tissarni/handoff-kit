@@ -65,6 +65,7 @@ verdict: PASS
 head: %s
 base: %s
 blockers: none
+risk: ordinary
 END FINAL REVIEW''' % (h.group(1), b.group(1)))
 PY
 chmod +x "$SANDBOX/bin/backend-capture"

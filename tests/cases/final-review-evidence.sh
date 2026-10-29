@@ -25,7 +25,7 @@ h = re.search(r'head: ([0-9a-f]{40})', text)
 b = re.search(r'base: ([0-9a-f]{40})', text)
 if not h or not b:
     sys.exit(4)
-print('FINAL REVIEW\nverdict: PASS\nhead: %s\nbase: %s\nblockers: none\nEND FINAL REVIEW' % (h.group(1), b.group(1)))
+print('FINAL REVIEW\nverdict: PASS\nhead: %s\nbase: %s\nblockers: none\nrisk: ordinary\nEND FINAL REVIEW' % (h.group(1), b.group(1)))
 if mode == 'PASS_EXIT':
     sys.exit(7)
 EOF
@@ -40,7 +40,7 @@ d = json.load(open(path, encoding='utf-8'))
 assert d['feature'] == feature
 assert d['repo'] == repo
 assert d['head'] == head and d['base'] == base
-assert d['verdict'] == 'PASS' and d['blockers'] == 'none'
+assert d['verdict'] == 'PASS' and d['blockers'] == 'none' and d['risk'] == 'ordinary'
 assert d['backend'] == 'claude' and isinstance(d['created'], int)
 PY
 [ "$(wc -l <"$SANDBOX/state/final-review.calls")" -eq 1 ] || fail "review call count is not one"
@@ -48,7 +48,7 @@ python3 - "$SANDBOX/state/final-review.prompt" "$BRIEF" "$HEAD_SHA" "$BASE_SHA" 
 import sys
 s=open(sys.argv[1]).read()
 assert all(x in s for x in sys.argv[2:])
-assert 'FINAL REVIEW' in s and 'verdict: PASS|FAIL' in s and 'blockers: none|<one line>' in s
+assert 'FINAL REVIEW' in s and 'verdict: PASS|FAIL' in s and 'blockers: none|<one line>' in s and 'risk:' in s
 assert '--disallowedTools' in s and 'Edit,Write,NotebookEdit' in s
 PY
 
@@ -127,5 +127,23 @@ OUT="$(launch final-review "$PLAN" --head "$HEAD_SHA" --base "$BASE_SHA" --backe
 [ "$RC" -ne 0 ] || fail "plan with mixed repositories unexpectedly launched"
 assert_no_file "${PLAN%.md}.final-review.json"
 [ "$(wc -l <"$SANDBOX/state/final-review.calls")" -eq 4 ] || fail "invalid plan invoked a reviewer"
+
+# Legacy and invalid-risk caches must be discarded and reviewed again.
+python3 - "$EVIDENCE" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p,encoding='utf-8')); d.pop('risk',None)
+json.dump(d,open(p,'w',encoding='utf-8'))
+PY
+OUT="$(launch final-review "$BRIEF" --head "$HEAD_SHA" --base "$BASE_SHA" --backend claude 2>&1)"; RC=$?
+[ "$RC" -eq 0 ] || fail "legacy-risk evidence was not replaced ($RC): $OUT"
+[ "$(wc -l <"$SANDBOX/state/final-review.calls")" -eq 5 ] || fail "legacy-risk evidence was reused"
+python3 - "$EVIDENCE" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p,encoding='utf-8')); d['risk']='not-a-risk'
+json.dump(d,open(p,'w',encoding='utf-8'))
+PY
+OUT="$(launch final-review "$BRIEF" --head "$HEAD_SHA" --base "$BASE_SHA" --backend claude 2>&1)"; RC=$?
+[ "$RC" -eq 0 ] || fail "invalid-risk evidence was not replaced ($RC): $OUT"
+[ "$(wc -l <"$SANDBOX/state/final-review.calls")" -eq 6 ] || fail "invalid-risk evidence was reused"
 
 echo ok

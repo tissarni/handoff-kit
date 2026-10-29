@@ -78,7 +78,7 @@ def reset():
 
 def gone(): evidence.unlink(missing_ok=True)
 # New positive interface and accepted informational/extra fields.
-reset(); ev(backend=None,created={'not':'validated'},extra='ignored'); p,lines=run(expect=0)
+reset(); ev(); obj=json.loads(evidence.read_text()); obj.pop('backend'); obj.pop('created'); obj['extra']='ignored'; evidence.write_text(json.dumps(obj)); p,lines=run(expect=0)
 assert sum(x.startswith('PUT ') for x in lines)==1, lines
 assert any('/pulls?state=all&head=acme:feature/x' in x for x in lines), lines
 # Legacy invocation, all malformed argument forms, and local repository identity.

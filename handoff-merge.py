@@ -7,6 +7,8 @@ running as this user can edit these local files. Agent-produced brief content is
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -275,32 +277,128 @@ def _bootstrap(slug: str) -> None:
     print("dev exists; preserved")
 
 
-def _finalize(slug: str, number: int, head: str, base: str, branch: str, policy_repo: str,
-              task: str, revision: str, risk: str) -> None:
+def _review_evidence(plan: str) -> tuple[str, str, str, str, str, str]:
+    feature = Path(plan).expanduser().resolve()
+    evidence = feature.with_name(feature.name[:-3] + ".final-review.json" if feature.name.endswith(".md")
+                                else feature.name + ".final-review.json")
+    try:
+        record = json.loads(evidence.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise Refusal("invalid final-review evidence: file") from exc
+    if not isinstance(record, dict):
+        raise Refusal("invalid final-review evidence: object")
+    required = ("feature", "repo", "head", "base", "verdict", "blockers", "risk")
+    for key in required:
+        if key not in record or not isinstance(record[key], str):
+            raise Refusal(f"invalid final-review evidence: {key}")
+    if record["feature"] != str(feature):
+        raise Refusal("invalid final-review evidence: feature")
+    if record["verdict"] != "PASS":
+        raise Refusal("invalid final-review evidence: verdict")
+    if record["blockers"] != "none":
+        raise Refusal("invalid final-review evidence: blockers")
+    if record["risk"] not in VALID_RISKS:
+        raise Refusal("invalid final-review evidence: risk")
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", record["head"]):
+        raise Refusal("invalid final-review evidence: head")
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", record["base"]):
+        raise Refusal("invalid final-review evidence: base")
+    try:
+        repo_path = Path(record["repo"]).expanduser().resolve(strict=True)
+        if not repo_path.is_dir():
+            raise OSError("not a directory")
+        local_head = subprocess.run(["git", "-C", str(repo_path), "rev-parse", "HEAD"], check=True,
+                                    text=True, capture_output=True).stdout.strip()
+        repo = str(repo_path)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise Refusal("invalid final-review evidence: repo") from exc
+    revision = ""
+    try:
+        lines = feature.read_text(encoding="utf-8").splitlines()
+        end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
+        for line in lines[1:end]:
+            match = re.match(r"^revision:\s*(.*?)\s*$", line)
+            if match:
+                revision = match.group(1).strip("\"'")
+                break
+    except (OSError, UnicodeError, StopIteration):
+        pass
+    if not revision:
+        raise Refusal("plan revision is missing")
+    if local_head.lower() != record["head"].lower():
+        raise Refusal("final-review evidence head does not match local HEAD")
+    return repo, str(feature), revision, record["risk"], record["head"].lower(), record["base"].lower()
+
+
+def _finalize_decision(slug: str, plan: str, branch: str, base: str) -> tuple[str, str, str, int, str, str]:
     if Path(slug).is_dir():
         raise Refusal("use owner/name as --repository; local paths are not forge identities")
-    policy_path = _repo(policy_repo)
+    policy_path, task, revision, risk, head, evidence_base = _review_evidence(plan)
     data = _load()
-    # Keep forge identity independent from the operator's local checkout path.
     entry = _entry(data, policy_path)
-    enabled = entry["enabled"] is True
-    approval = {"task": task, "revision": revision, "risk": risk}
-    if not enabled or (risk != "ordinary" and approval not in entry.get("overrides", [])):
-        raise Refusal("effective task policy is manual")
-    if os.environ.get("HANDOFF_MERGE_HOLD") == "1":
-        raise Refusal("a merge hold is active")
-    if not head or not base or not branch or branch in ("main", "dev"):
-        raise Refusal("expected feature branch, head and base revision are required")
+    if entry["enabled"] is not True:
+        raise Refusal("effective task policy is manual — repository policy manual")
+    assessment = next((a for a in entry["assessments"]
+                       if a["task"] == task and a["revision"] == revision), None)
+    if assessment is None:
+        raise Refusal("effective task policy is manual — no risk assessment")
+    if entry["hold"] or task in entry["task_holds"] or os.environ.get("HANDOFF_MERGE_HOLD") == "1":
+        raise Refusal("effective task policy is manual — hold")
+    assessed = assessment["risk"]
+    approval = {"task": task, "revision": revision, "risk": assessed}
+    if assessed != "ordinary" and approval not in entry["overrides"]:
+        raise Refusal(f"effective task policy is manual — risk {assessed}")
+    if risk != "ordinary" and risk != assessed:
+        raise Refusal(f"late risk {risk}")
+    if not branch or branch in ("main", "dev"):
+        raise Refusal("expected feature branch")
+    owner = slug.split("/", 1)[0]
+    rows = _gh("GET", f"repos/{slug}/pulls?state=all&head={owner}:{branch}", allow_list=True, paginate=True)
+    if not isinstance(rows, list):
+        raise Refusal("GitHub returned an invalid pull request list")
+    opened = []
+    for candidate in rows:
+        if not isinstance(candidate, dict) or candidate.get("state") != "open":
+            continue
+        candidate_head = candidate.get("head")
+        candidate_repo = candidate_head.get("repo") if isinstance(candidate_head, dict) else None
+        if isinstance(candidate_head, dict) and isinstance(candidate_repo, dict):
+            if (str(candidate_repo.get("full_name", "")).lower() == slug.lower() and
+                    candidate_head.get("ref") == branch):
+                opened.append(candidate)
+    if len(opened) != 1:
+        raise Refusal("expected exactly one open pull request")
+    pr = opened[0]
+    number = pr.get("number")
+    if not isinstance(number, int) or isinstance(number, bool):
+        raise Refusal("matching open pull request is invalid")
     pr = _gh("GET", f"repos/{slug}/pulls/{number}")
-    if (pr.get("state") != "open" or pr.get("draft") is not False or
-            pr.get("base", {}).get("ref") != "dev" or
-            pr.get("base", {}).get("sha") != base or
-            pr.get("base", {}).get("repo", {}).get("full_name", "").lower() != slug.lower() or
-            pr.get("head", {}).get("ref") != branch or
-            pr.get("head", {}).get("sha") != head or
-            pr.get("mergeable_state") != "clean" or
-            pr.get("head", {}).get("repo", {}).get("full_name", "").lower() != slug.lower()):
-        raise Refusal("PR is not open, non-draft, exact-head and targeted to dev")
+    head_info, base_info = pr.get("head"), pr.get("base")
+    if not isinstance(head_info, dict) or not isinstance(base_info, dict):
+        raise Refusal("pull request identity changed")
+    head_repo, base_repo = head_info.get("repo"), base_info.get("repo")
+    if not isinstance(head_repo, dict) or not isinstance(base_repo, dict):
+        raise Refusal("pull request identity changed")
+    if (pr.get("state") != "open" or base_info.get("ref") != base or
+            base_info.get("sha") != evidence_base or
+            str(base_repo.get("full_name", "")).lower() != slug.lower() or
+            str(head_repo.get("full_name", "")).lower() != slug.lower() or
+            head_info.get("ref") != branch or head_info.get("sha") != head or
+            pr.get("draft") is not False or pr.get("mergeable_state") != "clean"):
+        if pr.get("draft") is True:
+            raise Refusal("draft pull request is not eligible")
+        if base_info.get("ref") != base or base_info.get("sha") != evidence_base:
+            raise Refusal("base changed since final review")
+        if head_info.get("sha") != head:
+            raise Refusal("pull request head does not match final review")
+        if pr.get("mergeable_state") != "clean":
+            raise Refusal("pull request is not clean")
+        raise Refusal("pull request identity changed")
+    return policy_path, task, revision, number, head, evidence_base
+
+
+def _finalize(slug: str, plan: str, branch: str, base: str) -> None:
+    _, _, _, number, head, expected_base = _finalize_decision(slug, plan, branch, base)
     status = _gh("GET", f"repos/{slug}/commits/{head}/status")
     if status.get("state") != "success":
         raise Refusal("commit status is not successful")
@@ -308,15 +406,9 @@ def _finalize(slug: str, number: int, head: str, base: str, branch: str, policy_
     runs = checks.get("check_runs")
     if not isinstance(runs, list) or not runs or any(r.get("status") != "completed" or r.get("conclusion") != "success" for r in runs):
         raise Refusal("required check runs are absent or unsuccessful")
-    # Re-read policy and PR immediately before the one expected-head squash mutation.
-    entry = _entry(_load(), policy_path)
-    if entry["enabled"] is not True or (risk != "ordinary" and approval not in entry.get("overrides", [])) or os.environ.get("HANDOFF_MERGE_HOLD") == "1":
-        raise Refusal("task policy or hold changed before merge")
-    latest = _gh("GET", f"repos/{slug}/pulls/{number}")
-    if (latest.get("head", {}).get("sha") != head or latest.get("base", {}).get("sha") != base or
-            latest.get("base", {}).get("ref") != "dev" or latest.get("mergeable_state") != "clean" or
-            latest.get("state") != "open"):
-        raise Refusal("PR changed after readiness checks")
+    _, _, _, latest_number, latest_head, latest_base = _finalize_decision(slug, plan, branch, base)
+    if (latest_number, latest_head, latest_base) != (number, head, expected_base):
+        raise Refusal("pull request identity changed before merge")
     try:
         _gh("PUT", f"repos/{slug}/pulls/{number}/merge", {"sha": head, "merge_method": "squash"})
     except Refusal:
@@ -375,28 +467,33 @@ def main() -> int:
     p.add_argument("--approve", action="store_true", required=True)
     p = sub.add_parser("dev-bootstrap", help="create missing GitHub dev from verified main")
     p.add_argument("--repository", required=True)
-    p = sub.add_parser("finalize", help="readiness-check and squash one exact feature head")
+    p = sub.add_parser("finalize", help="readiness-check and squash one reviewed feature head")
     p.add_argument("--repository", required=True)
-    p.add_argument("--pr", required=True, type=int)
-    p.add_argument("--head", required=True)
-    p.add_argument("--base", required=True)
+    p.add_argument("--plan", required=True)
     p.add_argument("--branch", required=True)
-    p.add_argument("--policy-repo", required=True)
-    p.add_argument("--task", required=True)
-    p.add_argument("--revision", required=True)
-    p.add_argument("--risk", required=True, choices=sorted(VALID_RISKS))
+    p.add_argument("--base", default="dev")
     p = sub.add_parser("merge-state", help="read-only status of a matching pull request")
     p.add_argument("--repository", required=True)
     p.add_argument("--branch", required=True)
     p.add_argument("--base", required=True)
-    args = parser.parse_args()
+    argv = sys.argv[1:]
+    try:
+        if argv and argv[0] == "finalize":
+            with contextlib.redirect_stderr(io.StringIO()):
+                args = parser.parse_args(argv)
+        else:
+            args = parser.parse_args(argv)
+    except SystemExit as exc:
+        if argv and argv[0] == "finalize":
+            print("handoff-merge: invalid finalize arguments", file=sys.stderr)
+            return 1
+        raise exc
     try:
         if args.command == "dev-bootstrap":
             _bootstrap(_repo_slug(args.repository))
             return 0
         if args.command == "finalize":
-            _finalize(_repo_slug(args.repository), args.pr, args.head, args.base, args.branch,
-                      args.policy_repo, args.task, args.revision, args.risk)
+            _finalize(_repo_slug(args.repository), args.plan, args.branch, args.base)
             return 0
         if args.command == "merge-state":
             _merge_state(_repo_slug(args.repository), args.branch, args.base)

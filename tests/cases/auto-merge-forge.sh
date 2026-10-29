@@ -73,4 +73,4 @@ python3 - "$SANDBOX/state/forge.json" <<'PY'
 import json,sys
 assert json.load(open(sys.argv[1]))['dev']=='dev-owned'
 PY
-printf '%s\n' 'GitHub dev bootstrap and exact-head finalization passed'
+printf '%s\n' 'GitHub dev bootstrap passed'

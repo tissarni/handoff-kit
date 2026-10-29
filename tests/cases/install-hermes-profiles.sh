@@ -52,6 +52,9 @@ for n in review run close; do
   [ -n "$(find "$d/config.yaml" -perm 600)" ] || fail "step 4: $n config.yaml is not mode 600"
   has "installed hermes profile $n" "step 4"
 done
+test -f "$H/profiles/final-review/config.yaml" || fail "step 4: final-review config.yaml missing"
+[ ! -e "$H/profiles/final-review/SOUL.md" ] || fail "step 4: final-review unexpectedly has SOUL.md"
+cmp -s "$SANDBOX/model.expected" "$H/profiles/final-review/config.yaml" || fail "step 4: final-review config.yaml is not the model block"
 [ -z "$(find "$H" \( -name .env -o -name auth.json \))" ] || fail "step 4: credentials written"
 [ -z "$(find "$H/profiles" -mindepth 1 -maxdepth 1 -name '.*')" ] || fail "step 4: leftover dot directory"
 has 'NOTE: new hermes profiles have no credentials' "step 4"
@@ -61,12 +64,15 @@ cmp -s "$H/config.yaml" "$SANDBOX/cfg.before" || fail "step 4: ~/.hermes/config.
 # 5. second run keeps edits
 echo edited >>"$H/profiles/review/SOUL.md"
 echo 'edited: 1' >>"$H/profiles/run/config.yaml"
+echo 'kept: yes' >>"$H/profiles/final-review/config.yaml"
 OUT="$(inst "${ARGS[@]}" --hermes-profiles 2>&1)"; RC=$?
 [ "$RC" -eq 0 ] || fail "step 5: exit $RC: $OUT"
 for n in review run close; do has "kept hermes profile $n" "step 5"; done
 hasnt 'installed hermes profile' "step 5"
 [ "$(tail -n 1 "$H/profiles/review/SOUL.md")" = edited ] || fail "step 5: review SOUL edit lost"
 [ "$(tail -n 1 "$H/profiles/run/config.yaml")" = 'edited: 1' ] || fail "step 5: run config edit lost"
+[ "$(tail -n 1 "$H/profiles/final-review/config.yaml")" = 'kept: yes' ] || fail "step 5: final-review profile edit lost"
+[ ! -e "$H/profiles/final-review/SOUL.md" ] || fail "step 5: final-review unexpectedly has SOUL.md"
 
 # 6. a profile recreated with no model: block to copy
 rm -rf "$H/profiles/close"

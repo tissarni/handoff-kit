@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Run one bounded, read-only final review and persist its revision-bound verdict."""
+"""Prepare inputs for, and record the result of, a final review stage."""
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -16,7 +15,7 @@ BLOCK = re.compile(
 )
 
 
-def fail_before(message):
+def fail(message):
     print(f"handoff-final-review.py: {message}", file=sys.stderr)
     return 1
 
@@ -40,10 +39,7 @@ def scalar_frontmatter(path):
 
 
 def plan_briefs(lines, plan):
-    result = []
-    phase = None
-    in_phases = False
-    in_briefs = False
+    result, in_phases, in_briefs = [], False, False
     for line in lines:
         indent = len(line) - len(line.lstrip())
         text = line.strip()
@@ -52,20 +48,19 @@ def plan_briefs(lines, plan):
             continue
         if in_phases and indent == 0 and text and not text.startswith("#"):
             in_phases, in_briefs = False, False
-        if in_phases:
-            if indent <= 2 and re.match(r"^-\s+", text):
-                in_briefs = False
-            if re.match(r"briefs:\s*", text):
-                in_briefs = True
-                value = text.partition(":")[2].strip()
-                if value.startswith("["):
-                    value = value.strip("[]")
-                    result.extend(x.strip().strip("\"'") for x in value.split(",") if x.strip())
-                elif value:
-                    result.append(value.strip("\"'"))
-                continue
-            if in_briefs and indent >= 4 and text.startswith("-"):
-                result.append(text[1:].strip().strip("\"'"))
+        if not in_phases:
+            continue
+        if indent <= 2 and re.match(r"^-\s+", text):
+            in_briefs = False
+        if re.match(r"briefs:\s*", text):
+            in_briefs = True
+            value = text.partition(":")[2].strip()
+            if value.startswith("["):
+                result.extend(x.strip().strip("\"'") for x in value.strip("[]").split(",") if x.strip())
+            elif value:
+                result.append(value.strip("\"'"))
+        elif in_briefs and indent >= 4 and text.startswith("-"):
+            result.append(text[1:].strip().strip("\"'"))
     if not result:
         raise ValueError(f"{plan}: plan has no phase briefs")
     return [Path(p if os.path.isabs(p) else plan.parent / p).resolve() for p in result]
@@ -87,153 +82,128 @@ def atomic_json(path, data):
             pass
 
 
-def main(argv):
-    if len(argv) < 5:
-        return fail_before("usage: handoff-launch.sh final-review <feature> --head <sha> --base <sha> [--backend <backend>]")
-    feature_arg = argv[1]
-    options = argv[2:]
-    try:
-        head = options[options.index("--head") + 1]
-        base = options[options.index("--base") + 1]
-    except (ValueError, IndexError):
-        return fail_before("final-review requires --head <sha> and --base <sha>")
-    backend = ""
-    if "--backend" in options:
-        try:
-            backend = options[options.index("--backend") + 1]
-        except IndexError:
-            return fail_before("--backend requires a value")
+def git_head(repo):
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False).stdout.strip().lower()
+
+
+def resolve(feature_arg, head, base, check_head=True):
     if not HEX.fullmatch(head) or not HEX.fullmatch(base):
-        return fail_before("--head and --base must each be 40 hexadecimal characters")
+        raise ValueError("--head and --base must each be 40 hexadecimal characters")
     feature = Path(feature_arg)
     if not feature.is_absolute():
         feature = Path(os.environ.get("VAULT", ".")) / feature
-    try:
-        feature = feature.resolve(strict=True)
-        lines, meta = scalar_frontmatter(feature)
-        if feature.name.endswith(".md") and "phases:" in "\n".join(lines):
-            briefs = plan_briefs(lines, feature)
-        else:
-            briefs = [feature]
-        repos = []
-        for brief in briefs:
-            if not brief.is_file():
-                raise ValueError(f"plan brief is missing: {brief}")
-            _, bm = scalar_frontmatter(brief)
-            if not bm.get("repo"):
-                raise ValueError(f"brief has no repo: field: {brief}")
-            repo = Path(bm["repo"])
-            if not repo.is_absolute():
-                repo = brief.parent / repo
-            repos.append(repo.resolve(strict=True))
-        if len(set(repos)) != 1:
-            raise ValueError("briefs resolve to different repositories: " + ", ".join(map(str, briefs)))
-        repo = repos[0]
-        git_check = subprocess.run(["git", "-C", str(repo), "rev-parse", "--git-dir"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        if not repo.is_dir() or git_check.returncode:
-            raise ValueError(f"repo is not a git checkout: {repo}")
-    except (OSError, ValueError, IndexError) as exc:
-        return fail_before(str(exc))
-
+    feature = feature.resolve(strict=True)
+    lines, _ = scalar_frontmatter(feature)
+    briefs = plan_briefs(lines, feature) if feature.name.endswith(".md") and "phases:" in "\n".join(lines) else [feature]
+    repos = []
+    for brief in briefs:
+        if not brief.is_file():
+            raise ValueError(f"plan brief is missing: {brief}")
+        _, meta = scalar_frontmatter(brief)
+        if not meta.get("repo"):
+            raise ValueError(f"brief has no repo: field: {brief}")
+        repo = Path(meta["repo"])
+        if not repo.is_absolute():
+            repo = brief.parent / repo
+        repos.append(repo.resolve(strict=True))
+    if len(set(repos)) != 1:
+        raise ValueError("briefs resolve to different repositories: " + ", ".join(map(str, briefs)))
+    repo = repos[0]
+    if not repo.is_dir() or subprocess.run(["git", "-C", str(repo), "rev-parse", "--git-dir"],
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+        raise ValueError(f"repo is not a git checkout: {repo}")
+    if check_head and git_head(repo) != head.lower():
+        raise ValueError("repo HEAD does not match requested head")
     evidence = feature.with_name(feature.name[:-3] + ".final-review.json" if feature.name.endswith(".md") else feature.name + ".final-review.json")
-    record = {"feature": str(feature), "repo": str(repo), "head": head.lower(), "base": base.lower(),
-              "verdict": "FAIL", "blockers": "", "backend": backend or "claude", "created": int(time.time())}
+    return feature, briefs, repo, evidence
+
+
+def prepare(argv):
+    if len(argv) != 7 or argv[3] != "--head" or argv[5] != "--base":
+        return fail("usage: handoff-final-review.py prepare <feature> --head <sha> --base <sha>")
+    feature_arg, head, base = argv[2], argv[4], argv[6]
+    try:
+        feature, briefs, repo, evidence = resolve(feature_arg, head, base)
+    except (OSError, ValueError, IndexError) as exc:
+        return fail(str(exc))
     if evidence.is_file():
         try:
             old = json.loads(evidence.read_text(encoding="utf-8"))
-            if all(old.get(k) == record[k] for k in ("feature", "head", "base")):
-                current = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
-                                         text=True, stdout=subprocess.PIPE,
-                                         stderr=subprocess.DEVNULL, check=False).stdout.strip()
-                if current.lower() != head.lower():
-                    record["reason"] = "repo HEAD does not match requested head"
-                    atomic_json(evidence, record)
-                    print(f"FINAL REVIEW FAIL {head[:7]} — {record['reason']}")
-                    return 1
-                print(f"FINAL REVIEW {old.get('verdict', 'FAIL')} {head[:7]}" + (f" — {old.get('reason')}" if old.get("reason") else ""))
-                return 0 if old.get("verdict") == "PASS" else 1
+            if all(old.get(k) == v for k, v in (("feature", str(feature)), ("repo", str(repo)),
+                                                 ("head", head.lower()), ("base", base.lower()))):
+                print(json.dumps({"reuse": True, "record": old}))
+                return 0
         except (OSError, ValueError):
             pass
-
-    def write_fail(reason):
-        record["verdict"] = "FAIL"
-        record["reason"] = reason
-        atomic_json(evidence, record)
-        print(f"FINAL REVIEW FAIL {head[:7]} — {reason}")
-        return 1
-
-    current = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
-                             text=True, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, check=False).stdout.strip()
-    if current.lower() != head.lower():
-        return write_fail("repo HEAD does not match requested head")
-
-    if not backend:
-        backend = "hermes" if os.environ.get("HERMES_BACKEND") or not (
-            os.environ.get("CLAUDE_BIN") or shutil.which("claude")) else "claude"
-    record["backend"] = backend
-    timeout_s = os.environ.get("HANDOFF_FINAL_REVIEW_TIMEOUT", "1800")
-    if not timeout_s.isdigit() or int(timeout_s) < 1:
-        return write_fail("invalid timeout")
-    if backend == "hermes":
-        home = Path(os.environ.get("HOME", "~")).expanduser()
-        profile = home / ".hermes/profiles/final-review"
-        if not profile.is_dir():
-            return write_fail("hermes profile final-review missing")
-        binary = os.environ.get("HERMES_BIN") or shutil.which("hermes")
-        cmd = [binary, "-p", "final-review", "--in", str(repo), "-z"]
-    elif backend == "claude":
-        binary = os.environ.get("CLAUDE_BIN") or shutil.which("claude")
-        cmd = [binary, "-p", "--disallowedTools", "Edit,Write,NotebookEdit", "--name", "final-review", "--"]
-    elif backend == "devin":
-        binary = os.environ.get("DEVIN_BIN") or shutil.which("devin")
-        cmd = [binary, "--permission-mode", "auto", "-p"]
-    else:
-        return write_fail(f"unsupported backend {backend}")
-    if not binary:
-        return write_fail(f"{backend} not found")
-    prompt = ("Read-only final code review. Review the diff " + base + ".." + head +
-              " against every feature brief's §4 Done-when and §3, and repository AGENTS.md checks. "
-              "Do not edit, commit, push, merge, or invoke forge writes. End with exactly:\n"
-              "FINAL REVIEW\nverdict: PASS|FAIL\nhead: " + head.lower() + "\nbase: " + base.lower() +
-              "\nblockers: none|<one line>\nEND FINAL REVIEW")
-    if backend == "hermes":
-        cmd.append(prompt)
-    elif backend == "claude":
-        cmd.append(prompt)
-    else:
-        cmd.append(prompt)
-    try:
-        completed = subprocess.run(["timeout", "-k", "10", timeout_s, *cmd], cwd=repo,
-                                   text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   check=False)
-    except OSError as exc:
-        return write_fail(f"backend prerequisite: {exc}")
-    if completed.returncode == 124 or completed.returncode == 137:
-        return write_fail(f"timeout after {timeout_s} s")
-    if completed.returncode:
-        return write_fail(f"backend exited {completed.returncode}")
-    matches = list(BLOCK.finditer(completed.stdout))
-    if len(matches) != 1:
-        return write_fail("expected exactly one FINAL REVIEW block")
-    m = matches[0]
-    verdict, got_head, got_base, blockers = m.groups()
-    actual = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False).stdout.strip()
-    if actual.lower() != head.lower():
-        return write_fail("repo HEAD moved during review")
-    if got_head.lower() != head.lower():
-        return write_fail("review head mismatch")
-    if got_base.lower() != base.lower():
-        return write_fail("review base mismatch")
-    if verdict != "PASS" or blockers != "none":
-        return write_fail("review verdict FAIL" if verdict != "PASS" else "review blockers present")
-    record.update(verdict="PASS", blockers="none")
-    record.pop("reason", None)
-    atomic_json(evidence, record)
-    print(f"FINAL REVIEW PASS {head[:7]}")
+    print(json.dumps({"reuse": False, "repo": str(repo), "briefs": [str(p) for p in briefs],
+                      "evidence": str(evidence)}))
     return 0
+
+
+def record(argv):
+    if len(argv) < 11:
+        return fail("usage: handoff-final-review.py record <feature> --head <sha> --base <sha> --backend <backend> --output <file> [--status <status>]")
+    feature_arg, head, base, backend, output = argv[2], "", "", "", ""
+    status = ""
+    it = iter(argv[3:])
+    try:
+        for key in it:
+            value = next(it)
+            if key == "--head": head = value
+            elif key == "--base": base = value
+            elif key == "--backend": backend = value
+            elif key == "--output": output = value
+            elif key == "--status": status = value
+            else: return fail(f"unknown record option {key}")
+    except StopIteration:
+        return fail("record option requires a value")
+    try:
+        feature, _, repo, evidence = resolve(feature_arg, head, base, check_head=False)
+    except (OSError, ValueError, IndexError) as exc:
+        # The evidence target may still be resolvable from the feature path.
+        return fail(str(exc))
+    record = {"feature": str(feature), "repo": str(repo), "head": head.lower(), "base": base.lower(),
+              "verdict": "FAIL", "blockers": "", "backend": backend, "created": int(time.time())}
+    reason = ""
+    if status:
+        if status.startswith("timeout:"):
+            reason = "timeout after " + status.partition(":")[2] + " s"
+        elif status.startswith("exit:"):
+            reason = "backend exited " + status.partition(":")[2]
+        else:
+            reason = status
+    else:
+        try:
+            output_text = Path(output).read_text(encoding="utf-8")
+        except OSError as exc:
+            output_text = ""
+            reason = f"cannot read stage output: {exc}"
+        matches = list(BLOCK.finditer(output_text))
+        if not reason and len(matches) != 1:
+            reason = "expected exactly one FINAL REVIEW block"
+        if not reason:
+            verdict, got_head, got_base, blockers = matches[0].groups()
+            if git_head(repo) != head.lower(): reason = "repo HEAD moved during review"
+            elif got_head.lower() != head.lower(): reason = "review head mismatch"
+            elif got_base.lower() != base.lower(): reason = "review base mismatch"
+            elif verdict != "PASS": reason = "review verdict FAIL"
+            elif blockers != "none": reason = "review blockers present"
+            else: record.update(verdict="PASS", blockers="none")
+    if reason:
+        record["reason"] = reason
+    atomic_json(evidence, record)
+    verdict = record["verdict"]
+    print(f"FINAL REVIEW {verdict} {head[:7]}" + (f" — {reason}" if reason else ""))
+    return 0 if verdict == "PASS" else 1
+
+
+def main(argv):
+    if len(argv) < 2:
+        return fail("expected prepare or record subcommand")
+    if argv[1] == "prepare": return prepare(argv)
+    if argv[1] == "record": return record(argv)
+    return fail("expected prepare or record subcommand")
 
 
 if __name__ == "__main__":

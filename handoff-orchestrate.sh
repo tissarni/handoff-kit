@@ -1359,7 +1359,8 @@ phase_done() {
       else
         review_out=""
         review_rc=0
-        review_out="$(bash "$KIT/handoff-launch.sh" final-review "$PLAN" --head "$review_head" --base "$review_base" --backend "$BACKEND" 2>&1)" || review_rc=$?
+        review_launcher="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-launch.sh"
+        review_out="$(bash "$review_launcher" final-review "$PLAN" --head "$review_head" --base "$review_base" --backend "$BACKEND" 2>&1)" || review_rc=$?
         if [ "$review_rc" -eq 0 ]; then
           log_event "FINAL REVIEW PASS ${review_head:0:7}"
         else

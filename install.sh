@@ -8,7 +8,7 @@
 #   ~/.local/bin/handoff-launch, handoff-orchestrate, brief-check   symlinks into this kit
 #   ~/.claude/skills/<name>/        each skill under skills/, replaced whole
 #   ~/.config/systemd/user/handoff-watchdog@.service and .timer   copied from systemd/
-#   ~/.hermes/profiles/{review,run,close}   only with --hermes-profiles: each missing profile
+#   ~/.hermes/profiles/{review,run,close,final-review} only with --hermes-profiles: each missing profile
 #                                  is built from hermes/profiles/, an existing one is never touched
 # A flag left out keeps the value config.env already has. The environment's VAULT,
 # HANDOFF_DEFAULTS and HANDOFF_PROJECTS are ignored here: the file must not take a value
@@ -74,6 +74,7 @@ for n in handoff-launch handoff-orchestrate brief-check; do [ -x "$KIT/$n.sh" ] 
 for u in handoff-watchdog@.service handoff-watchdog@.timer; do [ -f "$KIT/systemd/$u" ] || die "$KIT/systemd/$u is missing"; done
 if [ "$hermes" = 1 ]; then
   for n in review run close; do [ -f "$KIT/hermes/profiles/$n/SOUL.md" ] || die "$KIT/hermes/profiles/$n/SOUL.md is missing"; done
+  [ -d "$KIT/hermes/profiles/final-review" ] || die "$KIT/hermes/profiles/final-review is missing"
   [ -d "$HOME/.hermes" ] || die "no $HOME/.hermes: install hermes first, or leave out --hermes-profiles"
 fi
 mkdir -p "$(dirname "$CFG")"; tmp="$CFG.tmp.$$"
@@ -94,11 +95,11 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload >/dev/
 else echo "NOTE: no systemd user session — units written to $units, not reloaded"; fi
 if [ "$hermes" = 1 ]; then
   hp="$HOME/.hermes/profiles"; made=0
-  for n in review run close; do
+  for n in review run close final-review; do
     d="$hp/$n"
     if [ -e "$d" ] || [ -L "$d" ]; then echo "kept hermes profile $n: $d exists"; continue; fi
     mkdir -p "$hp"; t="$hp/.$n.tmp.$$"; rm -rf "$t"; mkdir "$t"
-    cp "$KIT/hermes/profiles/$n/SOUL.md" "$t/SOUL.md"
+    if [ "$n" != final-review ]; then cp "$KIT/hermes/profiles/$n/SOUL.md" "$t/SOUL.md"; fi
     # The model: block only (it can hold a provider URL or a key): never printed, mode 600.
     if /usr/bin/grep -q '^model:' "$HOME/.hermes/config.yaml" 2>/dev/null; then
       ( umask 077; awk '/^model:/{f=1;print;next} f&&/^[^ ]/{f=0} f{print}' "$HOME/.hermes/config.yaml" >"$t/config.yaml" )

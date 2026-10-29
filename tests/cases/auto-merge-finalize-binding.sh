@@ -93,6 +93,7 @@ run(setup=lambda:(write_policy(hold=True),ev()),reason='hold')
 run(setup=lambda:(write_policy(task_hold=True),ev()),reason='hold')
 baseenv['HANDOFF_MERGE_HOLD']='1'; run(reason='hold'); baseenv.pop('HANDOFF_MERGE_HOLD')
 # Evidence validation, including every required field in missing and wrong-type forms.
+run(setup=lambda:(reset(),ev(head='f'*40)),reason='does not match local HEAD')
 run(setup=gone,reason='invalid final-review evidence')
 for label, raw, reason in [('malformed','{','invalid final-review evidence'),('non-object','[]','invalid final-review evidence'),('unknown risk',None,'invalid final-review evidence: risk'),('bad head',None,'invalid final-review evidence: head'),('FAIL',None,'invalid final-review evidence: verdict'),('other plan',None,'invalid final-review evidence: feature'),('bad base',None,'invalid final-review evidence: base'),('blockers',None,'invalid final-review evidence: blockers'),('repo checkout',None,'invalid final-review evidence: repo')]:
     def setup(label=label,raw=raw):

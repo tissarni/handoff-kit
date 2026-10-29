@@ -84,6 +84,11 @@ def _load() -> dict:
         raise Refusal(f"cannot read policy store: {exc}") from exc
     if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("repositories"), dict):
         raise Refusal("invalid policy store; refusing auto mode")
+    try:
+        for entry in data["repositories"].values():
+            _validate_entry(entry)
+    except (TypeError, ValueError, KeyError) as exc:
+        raise Refusal("invalid policy store; refusing auto mode") from exc
     return data
 
 
@@ -91,13 +96,57 @@ def _save(data: dict) -> None:
     _atomic_text(POLICIES, json.dumps(data, sort_keys=True, indent=2) + "\n")
 
 
+def _valid_task(task: Any) -> bool:
+    return isinstance(task, str) and task.startswith("/")
+
+
+def _validate_entry(entry: Any) -> None:
+    if (not isinstance(entry, dict) or
+            (entry.get("enabled") is not None and not isinstance(entry.get("enabled"), bool))):
+        raise ValueError("invalid repository policy")
+    overrides = entry.get("overrides", [])
+    if not isinstance(overrides, list):
+        raise ValueError("invalid overrides")
+    for approval in overrides:
+        if (not isinstance(approval, dict) or not _valid_task(approval.get("task"))
+                or not isinstance(approval.get("revision"), str) or not approval["revision"]
+                or approval.get("risk") not in VALID_RISKS):
+            raise ValueError("invalid override")
+    assessments = entry.get("assessments", [])
+    if not isinstance(assessments, list):
+        raise ValueError("invalid assessments")
+    seen_assessments = set()
+    for assessment in assessments:
+        if (not isinstance(assessment, dict) or not _valid_task(assessment.get("task"))
+                or not isinstance(assessment.get("revision"), str) or not assessment["revision"]
+                or assessment.get("risk") not in VALID_RISKS
+                or not isinstance(assessment.get("reason"), str) or not assessment["reason"]):
+            raise ValueError("invalid assessment")
+        identity = assessment["task"], assessment["revision"]
+        if identity in seen_assessments:
+            raise ValueError("duplicate assessment")
+        seen_assessments.add(identity)
+    if "hold" in entry and not isinstance(entry["hold"], bool):
+        raise ValueError("invalid hold")
+    task_holds = entry.get("task_holds", [])
+    if not isinstance(task_holds, list) or any(not _valid_task(task) for task in task_holds):
+        raise ValueError("invalid task holds")
+    if len(task_holds) != len(set(task_holds)):
+        raise ValueError("duplicate task hold")
+
+
 def _entry(data: dict, repo: str) -> dict:
     entry = data["repositories"].get(repo, {"enabled": None, "overrides": []})
-    if not isinstance(entry, dict) or entry.get("enabled") not in (None, True, False):
-        raise Refusal("invalid repository policy; refusing auto mode")
-    if not isinstance(entry.get("overrides", []), list):
-        raise Refusal("invalid task override store; refusing auto mode")
+    _validate_entry(entry)
+    entry.setdefault("assessments", [])
+    entry.setdefault("hold", False)
+    entry.setdefault("task_holds", [])
     return entry
+
+
+def _task_arg(task: str) -> None:
+    if not _valid_task(task):
+        raise Refusal("task identity must be an absolute path")
 
 
 def _bool(value: str) -> bool:
@@ -147,7 +196,8 @@ def _repo_slug(value: str) -> str:
 
 def _merge_state(slug: str, branch: str, base: str) -> None:
     """Report the state of matching first-party pull requests without writing."""
-    rows = _gh("GET", f"repos/{slug}/pulls?state=all&head={slug}:{branch}&base={base}",
+    owner = slug.split("/", 1)[0]
+    rows = _gh("GET", f"repos/{slug}/pulls?state=all&head={owner}:{branch}&base={base}",
                allow_list=True, paginate=True)
     if not isinstance(rows, list):
         raise Refusal("GitHub returned an invalid pull request list")
@@ -166,7 +216,7 @@ def _merge_state(slug: str, branch: str, base: str) -> None:
                 and base_repo["full_name"].lower() == slug.lower()
                 and head.get("ref") == branch and target.get("ref") == base):
             matches.append(pr)
-    opened = [pr for pr in matches if pr.get("state") == "open" and pr.get("merged") is not True]
+    opened = [pr for pr in matches if pr.get("state") == "open"]
     if len(opened) > 1:
         raise Refusal("ambiguous: more than one matching open pull request")
     if opened:
@@ -178,15 +228,22 @@ def _merge_state(slug: str, branch: str, base: str) -> None:
             raise Refusal("matching open pull request is invalid")
         print(f"open {number} {sha}")
         return
-    merged = [pr for pr in matches if pr.get("merged") is True and pr.get("merge_commit_sha")]
+    merged = [pr for pr in matches if pr.get("state") == "closed" and pr.get("merged_at") is not None]
     merged.sort(key=lambda pr: str(pr.get("merged_at") or ""), reverse=True)
     if merged:
         pr = merged[0]
-        sha = pr.get("head", {}).get("sha")
-        merge_sha = pr.get("merge_commit_sha")
-        if (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", sha)
-                or not isinstance(merge_sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", merge_sha)):
+        number = pr.get("number")
+        listed_sha = pr.get("head", {}).get("sha")
+        if (not isinstance(number, int) or isinstance(number, bool)
+                or not isinstance(listed_sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", listed_sha)):
             raise Refusal("matching merged pull request is invalid")
+        verified = _gh("GET", f"repos/{slug}/pulls/{number}")
+        sha = verified.get("head", {}).get("sha")
+        merge_sha = verified.get("merge_commit_sha")
+        if (verified.get("merged") is not True or sha != listed_sha
+                or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", sha)
+                or not isinstance(merge_sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", merge_sha)):
+            raise Refusal("matching merged pull request could not be verified")
         print(f"merged {merge_sha} {sha}")
         return
     print("absent")
@@ -299,7 +356,17 @@ def main() -> int:
     p.add_argument("--repo", required=True)
     p.add_argument("--task", required=True)
     p.add_argument("--revision", required=True)
+    p.add_argument("--risk", choices=sorted(VALID_RISKS))
+    p = sub.add_parser("assess", help="record operator risk assessment for a task revision")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--task", required=True)
+    p.add_argument("--revision", required=True)
     p.add_argument("--risk", required=True, choices=sorted(VALID_RISKS))
+    p.add_argument("--reason", required=True)
+    for name in ("hold", "release"):
+        p = sub.add_parser(name, help="set or clear a repository or task merge hold")
+        p.add_argument("--repo", required=True)
+        p.add_argument("--task")
     p = sub.add_parser("override", help="record explicit task-scoped operator approval")
     p.add_argument("--repo", required=True)
     p.add_argument("--task", required=True)
@@ -345,7 +412,18 @@ def main() -> int:
             print(str(value).lower())
             return 0
         repo = _repo(args.repo)
-        data = _load()
+        if args.command == "effective":
+            try:
+                data = _load()
+            except Refusal:
+                print("manual — invalid policy store")
+                return 0
+        else:
+            data = _load()
+        if args.command in ("effective", "assess", "override", "hold", "release") and getattr(args, "task", None) is not None:
+            _task_arg(args.task)
+        if args.command in ("effective", "assess", "override") and not args.revision:
+            raise Refusal("revision must be non-empty")
         entry = _entry(data, repo)
         if args.command == "policy-get":
             enabled = entry["enabled"]
@@ -357,6 +435,29 @@ def main() -> int:
             data["repositories"][repo] = entry
             _save(data)
             print("auto" if entry["enabled"] else "manual")
+            return 0
+        if args.command == "assess":
+            if not args.revision or not args.reason:
+                raise Refusal("assessment revision and reason must be non-empty")
+            entry["assessments"] = [a for a in entry["assessments"]
+                                    if (a["task"], a["revision"]) != (args.task, args.revision)]
+            entry["assessments"].append({"task": args.task, "revision": args.revision,
+                                         "risk": args.risk, "reason": args.reason})
+            data["repositories"][repo] = entry
+            _save(data)
+            print("assessed")
+            return 0
+        if args.command in ("hold", "release"):
+            held = args.command == "hold"
+            if args.task is None:
+                entry["hold"] = held
+            elif held and args.task not in entry["task_holds"]:
+                entry["task_holds"].append(args.task)
+            elif not held:
+                entry["task_holds"] = [task for task in entry["task_holds"] if task != args.task]
+            data["repositories"][repo] = entry
+            _save(data)
+            print("held" if held else "released")
             return 0
         if args.command == "override":
             if entry["enabled"] is not True:
@@ -370,15 +471,23 @@ def main() -> int:
             print("approved")
             return 0
         if args.command == "effective":
-            enabled = entry["enabled"]
-            if enabled is None:
-                enabled = False  # Unconfigured repositories remain manual.
-            approval = {"task": args.task, "revision": args.revision, "risk": args.risk}
-            approved = approval in entry.get("overrides", [])
-            if args.risk != "ordinary" and not approved:
-                print("manual")
-                return 0
-            print("auto" if enabled else "manual")
+            if entry["enabled"] is not True:
+                decision = "manual — repository policy manual"
+            else:
+                assessment = next((a for a in entry["assessments"]
+                                   if a["task"] == args.task and a["revision"] == args.revision), None)
+                if assessment is None:
+                    decision = "manual — no risk assessment"
+                elif (entry["hold"] or args.task in entry["task_holds"]
+                      or os.environ.get("HANDOFF_MERGE_HOLD") == "1"):
+                    decision = "manual — hold"
+                elif (assessment["risk"] != "ordinary" and
+                      {"task": args.task, "revision": args.revision, "risk": assessment["risk"]}
+                      not in entry["overrides"]):
+                    decision = f"manual — risk {assessment['risk']}"
+                else:
+                    decision = "auto"
+            print(decision)
             return 0
         raise Refusal("unsupported operation")
     except Refusal as exc:

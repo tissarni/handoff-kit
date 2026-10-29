@@ -61,7 +61,14 @@ cat >"$SANDBOX/bin/gh" <<'GH'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = api ]; then
-  printf '[{"number":1,"state":"closed","merged":true,"merge_commit_sha":"4444444444444444444444444444444444444444","head":{"sha":"%s","ref":"feat/test","repo":{"full_name":"test/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}]\n' "$FAKE_MERGE_SHA"
+  case "$*" in
+    *'/pulls/'[0-9]*)
+      printf '{"number":1,"state":"closed","merged":true,"merge_commit_sha":"4444444444444444444444444444444444444444","head":{"sha":"%s","ref":"feat/test","repo":{"full_name":"test/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}\n' "$FAKE_MERGE_SHA"
+      ;;
+    *)
+      printf '[{"number":1,"state":"closed","merged_at":"2026-01-01T00:00:00Z","merge_commit_sha":"4444444444444444444444444444444444444444","head":{"sha":"%s","ref":"feat/test","repo":{"full_name":"test/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}]\n' "$FAKE_MERGE_SHA"
+      ;;
+  esac
   exit 0
 fi
 exit 0

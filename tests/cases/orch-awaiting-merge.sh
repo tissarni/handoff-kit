@@ -30,6 +30,12 @@ if [ "${1:-}" = api ]; then
     case " $args " in *' -X GET '*) ;; *) echo 'unsafe request: fields without GET' >&2; exit 9 ;; esac ;;
   esac
   [ "${FAKE_GH_FAIL:-0}" = 1 ] && { echo failure >&2; exit 1; }
+  case "$args" in
+    *'head='*/*:*) echo 'invalid head filter' >&2; exit 8 ;;
+  esac
+  case "$args" in
+    *'/pulls/'[0-9]*) printf '%s\n' "$FAKE_GH_PR_RESPONSE"; exit 0 ;;
+  esac
   printf '%s\n' "${FAKE_GH_RESPONSE:-[]}"
   exit 0
 fi
@@ -54,15 +60,21 @@ export FAKE_GH_RESPONSE='[]'
 merge_state() {
   env -i PATH="$SANDBOX/bin:/usr/bin:/bin" HOME="$SANDBOX/home" \
     FAKE_STATE_DIR="$SANDBOX/state" FAKE_GH_RESPONSE="$1" FAKE_GH_FAIL="${2:-0}" \
+    FAKE_GH_PR_RESPONSE="${3-}" \
     GH_TOKEN=fake GH_HOST=github.com python3 "$SANDBOX/kit/handoff-merge.py" merge-state \
       --repository test/repo --branch feat/test --base main
 }
-foreign='[{"number":2,"state":"closed","merged":true,"merge_commit_sha":"foreign-merge","head":{"sha":"foreign-head","ref":"feat/test","repo":{"full_name":"fork/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}]'
+foreign='[{"number":2,"state":"closed","merged_at":"2026-01-01T00:00:00Z","merge_commit_sha":"foreign-merge","head":{"sha":"foreign-head","ref":"feat/test","repo":{"full_name":"fork/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}]'
 [ "$(merge_state "$foreign")" = absent ] || fail "foreign fork PR was not ignored"
-opened='[{"number":3,"state":"open","merged":false,"head":{"sha":"1111111111111111111111111111111111111111","ref":"feat/test","repo":{"full_name":"test/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}]'
+opened='[{"number":3,"state":"open","merged_at":null,"merge_commit_sha":null,"head":{"sha":"1111111111111111111111111111111111111111","ref":"feat/test","repo":{"full_name":"test/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}]'
 [ "$(merge_state "$opened")" = 'open 3 1111111111111111111111111111111111111111' ] || fail "open PR response form was wrong"
-merged='[{"number":4,"state":"closed","merged":true,"merged_at":"2026-01-01T00:00:00Z","merge_commit_sha":"2222222222222222222222222222222222222222","head":{"sha":"3333333333333333333333333333333333333333","ref":"feat/test","repo":{"full_name":"test/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}]'
-[ "$(merge_state "$merged")" = 'merged 2222222222222222222222222222222222222222 3333333333333333333333333333333333333333' ] || fail "merged PR response form was wrong"
+merged='[{"number":4,"state":"closed","merged_at":"2026-01-01T00:00:00Z","merge_commit_sha":"2222222222222222222222222222222222222222","head":{"sha":"3333333333333333333333333333333333333333","ref":"feat/test","repo":{"full_name":"test/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}]'
+pr_get='{"number":4,"state":"closed","merged":true,"mergeable_state":"unknown","body":"","merge_commit_sha":"2222222222222222222222222222222222222222","head":{"sha":"3333333333333333333333333333333333333333","ref":"feat/test","repo":{"full_name":"test/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}'
+before_get="$(wc -l <"$SANDBOX/state/gh.log")"
+merged_result="$(merge_state "$merged" 0 "$pr_get" 2>&1)" || fail "merged PR verification failed: $merged_result"
+[ "$merged_result" = 'merged 2222222222222222222222222222222222222222 3333333333333333333333333333333333333333' ] || fail "merged PR response form was wrong: $merged_result"
+[ "$(wc -l <"$SANDBOX/state/gh.log")" -eq "$((before_get + 2))" ] || fail "merged list item was not verified by one single-PR GET"
+/usr/bin/grep -q 'head=test:feat/test' "$SANDBOX/state/gh.log" || fail "list head filter did not use owner login"
 older_and_newer="$(python3 - "$merged" <<'PY'
 import json, sys
 old=json.loads(sys.argv[1])[0]
@@ -72,7 +84,9 @@ new['head']['sha']='6666666666666666666666666666666666666666'
 print(json.dumps([new, old]))
 PY
 )"
-[ "$(merge_state "$older_and_newer")" = 'merged 5555555555555555555555555555555555555555 6666666666666666666666666666666666666666' ] || fail "most recently merged matching PR was not selected"
+new_get="${pr_get/2222222222222222222222222222222222222222/5555555555555555555555555555555555555555}"
+new_get="${new_get/3333333333333333333333333333333333333333/6666666666666666666666666666666666666666}"
+[ "$(merge_state "$older_and_newer" 0 "$new_get")" = 'merged 5555555555555555555555555555555555555555 6666666666666666666666666666666666666666' ] || fail "most recently merged matching PR was not selected"
 prefer_open="$(python3 - "$opened" "$merged" <<'PY'
 import json, sys
 print(json.dumps(json.loads(sys.argv[1]) + json.loads(sys.argv[2])))
@@ -96,6 +110,7 @@ merge_orch() {
   _sbx_env
   env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com \
     FAKE_GH_RESPONSE="${FAKE_GH_RESPONSE:-[]}" FAKE_GH_FAIL="${FAKE_GH_FAIL:-0}" \
+    FAKE_GH_PR_RESPONSE="${FAKE_GH_PR_RESPONSE-}" \
     bash "$SANDBOX/kit/handoff-orchestrate.sh" resume "$PLAN" --backend claude --publication-owner supervisor
 }
 
@@ -154,11 +169,12 @@ run_state() {
     fail) case "$output" in *'failed'*) ;; *) fail "API failure not named: $output" ;; esac ;;
   esac
 }
-run_state '[{"number":7,"state":"open","merged":false,"head":{"sha":"reviewed-head","ref":"feat/test","repo":{"full_name":"test/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}]' 1 open
+run_state '[{"number":7,"state":"open","merged_at":null,"merge_commit_sha":null,"head":{"sha":"reviewed-head","ref":"feat/test","repo":{"full_name":"test/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}]' 1 open
 plan_before="$(sha256sum "$PLAN" | cut -d' ' -f1)"
 run_state '[]' 1 absent
 [ "$(sha256sum "$PLAN" | cut -d' ' -f1)" = "$plan_before" ] || fail "absent response changed plan file"
-run_state '[{"number":8,"state":"closed","merged":true,"merge_commit_sha":"4444444444444444444444444444444444444444","head":{"sha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","ref":"feat/test","repo":{"full_name":"test/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}]' 1 stale
+FAKE_GH_PR_RESPONSE='{"number":8,"state":"closed","merged":true,"merge_commit_sha":"4444444444444444444444444444444444444444","head":{"sha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","ref":"feat/test","repo":{"full_name":"test/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}'
+run_state '[{"number":8,"state":"closed","merged_at":"2026-01-01T00:00:00Z","merge_commit_sha":"4444444444444444444444444444444444444444","head":{"sha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","ref":"feat/test","repo":{"full_name":"test/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}]' 1 stale
 export FAKE_GH_FAIL=1
 run_state '[]' 1 fail
 unset FAKE_GH_FAIL
@@ -176,7 +192,8 @@ else:
     s=re.sub(r'^final-reviewed-head:.*$', 'final-reviewed-head: '+sha, s, flags=re.M)
 open(p, 'w', encoding='utf-8').write(s)
 PY
-export FAKE_GH_RESPONSE="[{\"number\":9,\"state\":\"closed\",\"merged\":true,\"merge_commit_sha\":\"4444444444444444444444444444444444444444\",\"head\":{\"sha\":\"$reviewed\",\"ref\":\"feat/test\",\"repo\":{\"full_name\":\"test/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"test/repo\"}}}]"
+export FAKE_GH_RESPONSE="[{\"number\":9,\"state\":\"closed\",\"merged_at\":\"2026-01-01T00:00:00Z\",\"merge_commit_sha\":\"4444444444444444444444444444444444444444\",\"head\":{\"sha\":\"$reviewed\",\"ref\":\"feat/test\",\"repo\":{\"full_name\":\"test/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"test/repo\"}}}]"
+export FAKE_GH_PR_RESPONSE="{\"number\":9,\"state\":\"closed\",\"merged\":true,\"merge_commit_sha\":\"4444444444444444444444444444444444444444\",\"head\":{\"sha\":\"$reviewed\",\"ref\":\"feat/test\",\"repo\":{\"full_name\":\"test/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"test/repo\"}}}"
 before="$(wc -l <"$SANDBOX/state/calls.log")"
 OUT="$(merge_orch 2>&1)"; RC=$?
 [ "$RC" -eq 0 ] || fail "verified merge resume failed: $OUT"

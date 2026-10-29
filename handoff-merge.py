@@ -10,9 +10,11 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import subprocess
+from typing import Any
 
 CONFIG = Path.home() / ".config" / "handoff" / "config.env"
 POLICIES = Path.home() / ".config" / "handoff" / "project-policy.json"
@@ -104,13 +106,15 @@ def _bool(value: str) -> bool:
     return value == "true"
 
 
-def _gh(method: str, endpoint: str, fields: dict[str, str] | None = None) -> dict:
+def _gh(method: str, endpoint: str, fields: dict[str, str] | None = None,
+        *, allow_list: bool = False, paginate: bool = False) -> Any:
     """Call one fixed GitHub REST endpoint and decode its JSON response."""
     if not os.environ.get("GH_TOKEN") or os.environ.get("GH_HOST") != "github.com":
         raise Refusal("GitHub credentials/host are not configured")
     argv = ["gh", "api"]
-    if method != "GET":
-        argv += ["-X", method]
+    if paginate:
+        argv += ["--paginate", "--slurp"]
+    argv += ["-X", method]
     argv.append(endpoint)
     for key, value in (fields or {}).items():
         argv += ["-f", f"{key}={value}"]
@@ -127,8 +131,10 @@ def _gh(method: str, endpoint: str, fields: dict[str, str] | None = None) -> dic
         raise Refusal(f"GitHub {method} {endpoint} failed") from exc
     except json.JSONDecodeError as exc:
         raise Refusal(f"GitHub {method} {endpoint} failed") from exc
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) and not (allow_list and isinstance(data, list)):
         raise Refusal("GitHub returned an invalid response")
+    if paginate and isinstance(data, list) and data and all(isinstance(page, list) for page in data):
+        data = [item for page in data for item in page]
     return data
 
 
@@ -137,6 +143,53 @@ def _repo_slug(value: str) -> str:
     if len(parts) != 2 or any(not p or p in (".", "..") or not p.replace("-", "").replace("_", "").isalnum() for p in parts):
         raise Refusal("repository must be owner/name")
     return value
+
+
+def _merge_state(slug: str, branch: str, base: str) -> None:
+    """Report the state of matching first-party pull requests without writing."""
+    rows = _gh("GET", f"repos/{slug}/pulls?state=all&head={slug}:{branch}&base={base}",
+               allow_list=True, paginate=True)
+    if not isinstance(rows, list):
+        raise Refusal("GitHub returned an invalid pull request list")
+    matches = []
+    for pr in rows:
+        if not isinstance(pr, dict):
+            continue
+        head, target = pr.get("head"), pr.get("base")
+        if not isinstance(head, dict) or not isinstance(target, dict):
+            continue
+        head_repo, base_repo = head.get("repo"), target.get("repo")
+        if (isinstance(head_repo, dict) and isinstance(base_repo, dict)
+                and isinstance(head_repo.get("full_name"), str)
+                and isinstance(base_repo.get("full_name"), str)
+                and head_repo["full_name"].lower() == slug.lower()
+                and base_repo["full_name"].lower() == slug.lower()
+                and head.get("ref") == branch and target.get("ref") == base):
+            matches.append(pr)
+    opened = [pr for pr in matches if pr.get("state") == "open" and pr.get("merged") is not True]
+    if len(opened) > 1:
+        raise Refusal("ambiguous: more than one matching open pull request")
+    if opened:
+        pr = opened[0]
+        sha = pr.get("head", {}).get("sha")
+        number = pr.get("number")
+        if (not isinstance(number, int) or isinstance(number, bool)
+                or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", sha)):
+            raise Refusal("matching open pull request is invalid")
+        print(f"open {number} {sha}")
+        return
+    merged = [pr for pr in matches if pr.get("merged") is True and pr.get("merge_commit_sha")]
+    merged.sort(key=lambda pr: str(pr.get("merged_at") or ""), reverse=True)
+    if merged:
+        pr = merged[0]
+        sha = pr.get("head", {}).get("sha")
+        merge_sha = pr.get("merge_commit_sha")
+        if (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", sha)
+                or not isinstance(merge_sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", merge_sha)):
+            raise Refusal("matching merged pull request is invalid")
+        print(f"merged {merge_sha} {sha}")
+        return
+    print("absent")
 
 
 def _bootstrap(slug: str) -> None:
@@ -265,6 +318,10 @@ def main() -> int:
     p.add_argument("--task", required=True)
     p.add_argument("--revision", required=True)
     p.add_argument("--risk", required=True, choices=sorted(VALID_RISKS))
+    p = sub.add_parser("merge-state", help="read-only status of a matching pull request")
+    p.add_argument("--repository", required=True)
+    p.add_argument("--branch", required=True)
+    p.add_argument("--base", required=True)
     args = parser.parse_args()
     try:
         if args.command == "dev-bootstrap":
@@ -273,6 +330,9 @@ def main() -> int:
         if args.command == "finalize":
             _finalize(_repo_slug(args.repository), args.pr, args.head, args.base, args.branch,
                       args.policy_repo, args.task, args.revision, args.risk)
+            return 0
+        if args.command == "merge-state":
+            _merge_state(_repo_slug(args.repository), args.branch, args.base)
             return 0
         if args.command == "default-get":
             print(str(_default()).lower())

@@ -362,6 +362,82 @@ except BaseException:
 PY
   log_event "plan orchestration -> $1"
 }
+set_final_reviewed_head() {  # $1 = full head SHA bound by the final review
+  python3 - "$PLAN" "$1" "$(date +%F)" <<'PY'
+import io, os, stat, sys
+path, head, today = sys.argv[1:4]
+lines = io.open(path, encoding='utf-8').read().split('\n')
+end = next(i for i, line in enumerate(lines[1:], 1) if line.strip() == '---')
+seen = False
+for i in range(1, end):
+    if lines[i].startswith('final-reviewed-head:'):
+        lines[i] = f'final-reviewed-head: {head}'; seen = True
+    elif lines[i].startswith('updated:'):
+        lines[i] = f'updated: {today}'
+if not seen: lines.insert(end, f'final-reviewed-head: {head}')
+real = os.path.realpath(path); tmp = f'{real}.tmp.{os.getpid()}'
+try:
+    with io.open(tmp, 'w', encoding='utf-8', newline='') as stream: stream.write('\n'.join(lines))
+    os.chmod(tmp, stat.S_IMODE(os.stat(real).st_mode)); os.replace(tmp, real)
+except BaseException:
+    try: os.unlink(tmp)
+    except OSError: pass
+    raise
+PY
+}
+github_repo_slug() {
+  git -C "$REPO" remote get-url origin 2>/dev/null | python3 -c 'import re,sys,urllib.parse
+u=sys.stdin.read().strip(); p=urllib.parse.urlsplit(u)
+if p.hostname and p.hostname.lower() == "github.com": path=p.path.strip("/")
+else:
+    m=re.fullmatch(r"(?:[^@/]+@)?github\.com:(.+)", u)
+    if not m: sys.exit(1)
+    path=m.group(1).strip("/")
+if path.endswith(".git"): path=path[:-4]
+parts=path.split("/")
+if len(parts) != 2 or not all(re.fullmatch(r"[A-Za-z0-9_-]+", x) for x in parts): sys.exit(1)
+print("/".join(parts))'
+}
+resume_awaiting_merge() {
+  local slug reviewed out rc kind first second merge_helper
+  slug="$(github_repo_slug)" || die "merge verification requires a GitHub origin URL"
+  reviewed="$(fm_scalar "$PLAN" final-reviewed-head)"
+  [[ "$reviewed" =~ ^[0-9a-fA-F]{40}$ ]] || die "awaiting-merge plan has no valid final-reviewed-head"
+  merge_helper="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-merge.py"
+  out="$(python3 "$merge_helper" merge-state --repository "$slug" --branch "$WANT_BRANCH" --base "$BASE_BRANCH" 2>&1)" || {
+    printf 'still awaiting merge into %s: %s\n' "$BASE_BRANCH" "${out##*$'\n'}" >&2
+    exit 1
+  }
+  read -r kind first second <<<"$out"
+  case "$kind" in
+    merged)
+      if [ "$second" != "$reviewed" ]; then
+        printf 'still awaiting merge into %s: reviewed head %s does not match PR head %s\n' "$BASE_BRANCH" "${reviewed:0:7}" "${second:0:7}" >&2
+        exit 1
+      fi
+      log_event "MERGE VERIFIED ${first:0:7} into $BASE_BRANCH"
+      set_plan_orch done
+      local clf; clf="$(checkout_lock_path 2>/dev/null)" || clf=""
+      if [ -n "$clf" ] && [ -f "$clf" ] && [ "$(head -1 "$clf")" = "$(readlink -f "$PLAN")" ]; then rm -f "$clf"; fi
+      write_status "DONE · merge ${first:0:7} verified into $BASE_BRANCH · $(ts "$(now_s)")" "$(phase_summary)"
+      retire_watchdog
+      notify "DONE · merge ${first:0:7} verified into $BASE_BRANCH"
+      echo "merge verified: ${first:0:7} into $BASE_BRANCH"
+      ;;
+    open)
+      printf 'still awaiting merge into %s: PR #%s remains open (%s)\n' "$BASE_BRANCH" "$first" "${second:0:7}" >&2
+      exit 1
+      ;;
+    absent)
+      printf 'still awaiting merge into %s: no matching PR was found\n' "$BASE_BRANCH" >&2
+      exit 1
+      ;;
+    *)
+      printf 'still awaiting merge into %s: invalid merge-state response\n' "$BASE_BRANCH" >&2
+      exit 1
+      ;;
+  esac
+}
 set_phase_status() {  # $1 = pending|running|done|broken, on phases[PLAN_PHASE_IDX]
   python3 - "$PLAN" "$PLAN_PHASE_IDX" "$1" <<'PY'
 import io, os, re, stat, sys
@@ -431,7 +507,7 @@ checkout_held_by_other() {  # $1 = lock file
   holder="$(head -1 "$1")"; self="$(readlink -f "$PLAN")"
   [ -n "$holder" ] && [ "$holder" != "$self" ] && [ -f "$holder" ] || return 0
   st="$(fm_scalar "$holder" orchestration)"; st="${st%% *}"
-  case "$st" in running|paused|broken) ;; *) return 0 ;; esac
+  case "$st" in running|paused|broken|awaiting-merge) ;; *) return 0 ;; esac
   printf 'preflight:checkout — %s is held by %s (orchestration: %s). Give this plan its own checkout:\n' "$REPO" "$holder" "$st"
   checkout_remedy
   printf "(or change the holder's orchestration: in its plan file if it is finished)"
@@ -748,7 +824,7 @@ notify() {  # $1 = message. Loud for NEEDS YOU / PAUSED, silent otherwise.
   token="$(/usr/bin/grep -E '^TELEGRAM_BOT_TOKEN=' "$env" | cut -d= -f2- | tr -d '"'"'")"
   chat="$(/usr/bin/grep -E '^TELEGRAM_CHAT_ID=' "$env" | cut -d= -f2- | tr -d '"'"'")"
   [ -n "$token" ] && [ -n "$chat" ] || { echo "notify: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing in $env" >&2; return 0; }
-  case "$1" in NEEDS\ YOU*|PAUSED*) dn=false ;; esac
+  case "$1" in NEEDS\ YOU*|PAUSED*|AWAITING\ MERGE*) dn=false ;; esac
   curl -fsS -m 20 -X POST "https://api.telegram.org/bot${token}/sendMessage" \
     --data-urlencode "chat_id=$chat" --data-urlencode "text=$1
 $PLAN_ARG" --data-urlencode "disable_notification=$dn" >/dev/null 2>&1 \
@@ -1350,12 +1426,13 @@ phase_done() {
   if [ $((PLAN_PHASE_IDX+1)) -ge "$PLAN_PHASE_COUNT" ]; then
     merge_helper="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-merge.py"
     merge_policy="$(python3 "$merge_helper" policy-get --repo "$REPO" 2>/dev/null || true)"
-    if [ "$merge_policy" = "auto" ]; then
+    if [ "$merge_policy" = "auto" ] && [ "$(repo_forge)" = github ]; then
       review_head="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
       base_ref="origin/$BASE_BRANCH"
       review_base="$(git -C "$REPO" merge-base HEAD "$base_ref" 2>/dev/null || true)"
       if [ -z "$review_base" ]; then
         log_event "FINAL REVIEW FAIL ${review_head:0:7} — base unavailable: $base_ref"
+        break_phase "final-review — base unavailable: $base_ref" "${PLAN_BRIEFS[-1]}"
       else
         review_out=""
         review_rc=0
@@ -1366,8 +1443,19 @@ phase_done() {
         else
           review_reason="$(printf '%s\n' "$review_out" | tail -1 | sed 's/^.* — //')"
           log_event "FINAL REVIEW FAIL ${review_head:0:7} — ${review_reason:-reviewer failed}"
+          break_phase "final-review — ${review_reason:-reviewer failed}" "${PLAN_BRIEFS[-1]}"
         fi
       fi
+      before_awaiting_merge
+      set_final_reviewed_head "$review_head"
+      set_plan_orch awaiting-merge
+      set_phase_status done
+      release_lock
+      write_status "AWAITING MERGE · final review PASS ${review_head:0:7} · merge into $BASE_BRANCH not yet verified · $(ts "$(now_s)")" "$(printf 'PR: %s' "$(pr_url)")"
+      log_event "AWAITING MERGE ${review_head:0:7} — final review PASS; merge into $BASE_BRANCH not yet verified"
+      notify "AWAITING MERGE · final review PASS ${review_head:0:7} · merge into $BASE_BRANCH not yet verified"
+      echo "awaiting merge into $BASE_BRANCH"
+      return 0
     fi
     set_plan_orch done
   else
@@ -1383,6 +1471,9 @@ phase_done() {
   notify "DONE · phase $((PLAN_PHASE_IDX+1))/$PLAN_PHASE_COUNT · $PLAN_PHASE_NAME · $PLAN_BRIEF_COUNT briefs closed"
   echo "phase $((PLAN_PHASE_IDX+1)) complete"
 }
+
+# Step 3 inserts the automatic merge attempt here before the held state is recorded.
+before_awaiting_merge() { :; }
 
 # ---------------------------------------------------------------- start / resume
 # The plan branch is the orchestrator's to set up, not the human's (2026-09-24: the operator was
@@ -1419,6 +1510,11 @@ ensure_branch() {
 }
 
 begin() {  # $1 = START|RESUME
+  if [ "$PLAN_ORCH" = awaiting-merge ]; then
+    [ "$1" = RESUME ] || die "plan is awaiting merge; use resume to verify the merge"
+    resume_awaiting_merge
+    return 0
+  fi
   case "$PLAN_ORCH" in
     running) lock_alive && die "plan is running: $(cat "$LOCK")"; ;;   # stale `running` with no live driver: fall through
     phase-done|done) die "phase $((PLAN_PHASE_IDX+1)) is $PLAN_ORCH — /handoff-plan writes the next phase and resets orchestration: planned" ;;

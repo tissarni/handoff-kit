@@ -43,8 +43,8 @@ make_plan "$PLAN" "$ORCH_A" "$ORCH_B"
 env -i HOME="$SANDBOX/home" PATH="$SANDBOX/bin:/usr/bin:/bin" python3 "$SANDBOX/kit/handoff-merge.py" policy-set --repo "$SANDBOX/repo_under.test" true >/dev/null
 EVENTS="${PLAN%.md}.events.log"
 orch start "$PLAN" --backend claude >/dev/null 2>&1
-is_done() { /usr/bin/grep -q '^orchestration: done' "$PLAN" 2>/dev/null; }
-wait_for 90 is_done || fail "auto-policy plan did not complete: $(head -1 "${PLAN%.md}.status.md" 2>/dev/null)"
+is_awaiting_merge() { /usr/bin/grep -q '^orchestration: awaiting-merge' "$PLAN" 2>/dev/null; }
+wait_for 90 is_awaiting_merge || fail "auto-policy plan did not await merge: $(head -1 "${PLAN%.md}.status.md" 2>/dev/null)"
 [ "$(state_of "$ORCH_A")" = closed ] && [ "$(state_of "$ORCH_B")" = closed ] || fail "auto-policy plan did not close both briefs"
 [ "$(count_final)" -eq 3 ] || fail "auto policy did not invoke one final reviewer"
 pass_line="$(/usr/bin/grep -n 'FINAL REVIEW PASS' "$EVENTS" | cut -d: -f1)"
@@ -53,6 +53,30 @@ closed_lines="$(/usr/bin/grep -n 'BRIEF CLOSED' "$EVENTS" | cut -d: -f1 | tail -
 last_closed="$(printf '%s\n' "$closed_lines" | tail -1)"
 [ "$pass_line" -gt "$last_closed" ] || fail "final review was logged before both BRIEF CLOSED events"
 assert_file "${PLAN%.md}.final-review.json"
+
+# Complete the held checkout through the read-only merge verification before the
+# partial-phase scenario reuses this sandbox repository.
+git -C "$SANDBOX/repo_under.test" remote set-url origin https://github.com/test/repo
+cat >"$SANDBOX/bin/gh" <<'GH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = api ]; then
+  printf '[{"number":1,"state":"closed","merged":true,"merge_commit_sha":"4444444444444444444444444444444444444444","head":{"sha":"%s","ref":"feat/test","repo":{"full_name":"test/repo"}},"base":{"ref":"main","repo":{"full_name":"test/repo"}}}]\n' "$FAKE_MERGE_SHA"
+  exit 0
+fi
+exit 0
+GH
+chmod +x "$SANDBOX/bin/gh"
+merge_orch() {
+  _sbx_env
+  local reviewed
+  reviewed="$(/usr/bin/grep -m1 '^final-reviewed-head:' "$PLAN" | cut -d: -f2- | tr -d ' ')"
+  env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com FAKE_MERGE_SHA="$reviewed" \
+    bash "$SANDBOX/kit/handoff-orchestrate.sh" resume "$PLAN" --backend claude --publication-owner supervisor
+}
+OUT="$(merge_orch 2>&1)"; RC=$?
+[ "$RC" -eq 0 ] || fail "final-review plan did not complete via merge verification: $OUT"
+/usr/bin/grep -q '^orchestration: done' "$PLAN" || fail "verified merge did not release final-review plan"
 
 # An auto-policy plan cannot review after only its first phase has completed.
 PARTIAL_A="$(make_brief testsub partial-a.md draft)"

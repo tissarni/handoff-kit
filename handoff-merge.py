@@ -654,6 +654,8 @@ def main() -> int:
             args = parser.parse_args(argv)
     except SystemExit as exc:
         if argv and argv[0] == "finalize":
+            if exc.code == 0:
+                return 0
             print("handoff-merge: invalid finalize arguments", file=sys.stderr)
             return 1
         raise exc

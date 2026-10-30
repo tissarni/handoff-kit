@@ -230,6 +230,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
+devin_readonly_config() {   # $1 = output config; $2 = optional user config to merge
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+out, user = sys.argv[1], sys.argv[2]
+try:
+    base = json.load(open(user, encoding="utf-8"))
+    if not isinstance(base, dict):
+        raise ValueError
+    note = "merged into the user config"
+except FileNotFoundError:
+    base, note = {}, "no user config to merge (created one)"
+except Exception:
+    base, note = {}, "user config is not plain JSON — NOT merged, only the deny rule applies"
+perms = base.get("permissions") if isinstance(base.get("permissions"), dict) else {}
+deny = list(perms.get("deny") or [])
+if "edit" not in deny:
+    deny.append("edit")
+base["permissions"] = {**perms, "deny": deny}
+base["read_config_from"] = {**{"cursor": True, "windsurf": True, "claude": True},
+                            **(base.get("read_config_from") or {})}
+json.dump(base, open(out, "w", encoding="utf-8"), indent=2)
+print(note)
+PY
+}
+
 KIT="${HANDOFF_KIT:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)}"
 
 # Find claude without depending on the caller's PATH. `bash <script>` is neither a login
@@ -413,7 +438,10 @@ PY
       review_cmd=("$CLAUDE_BIN" -p "${review_settings_args[@]}" --permission-mode bypassPermissions --disallowedTools "Edit,Write,NotebookEdit,$HEADLESS_DENY,Bash(git push*),Bash(git commit*),Bash(git checkout*),Bash(git switch*),Bash(git merge*),Bash(gh *),Bash(glab *)" --name final-review --session-id "$review_session_id" -- "$review_prompt") ;;
     devin)
       [ -n "$DEVIN_BIN" ] || review_status="devin not found"
-      review_cmd=("$DEVIN_BIN" --permission-mode dangerous --respect-workspace-trust false -p -- "$review_prompt") ;;
+      DV_TMP="$(mktemp -d)"
+      DV_CONFIG="$DV_TMP/readonly-config.json"
+      DV_CONFIG_NOTE="$(devin_readonly_config "$DV_CONFIG" "$HOME/.config/devin/config.json")"
+      review_cmd=("$DEVIN_BIN" --config "$DV_CONFIG" --permission-mode dangerous --respect-workspace-trust false -p -- "$review_prompt") ;;
     *) review_status="unsupported backend $review_backend" ;;
   esac
   if [ -z "$review_status" ]; then
@@ -673,29 +701,7 @@ if [ "$BACKEND" = "devin" ]; then
   case "$MODE" in
     review|close)
       DV_CONFIG="$DV_TMP/readonly-config.json"
-      DV_CONFIG_NOTE="$(python3 - "$DV_CONFIG" "$HOME/.config/devin/config.json" <<'PY'
-import json, sys
-out, user = sys.argv[1], sys.argv[2]
-try:
-    base = json.load(open(user, encoding="utf-8"))
-    if not isinstance(base, dict):
-        raise ValueError
-    note = "merged into the user config"
-except FileNotFoundError:
-    base, note = {}, "no user config to merge (created one)"
-except Exception:
-    base, note = {}, "user config is not plain JSON — NOT merged, only the deny rule applies"
-perms = base.get("permissions") if isinstance(base.get("permissions"), dict) else {}
-deny = list(perms.get("deny") or [])
-if "edit" not in deny:
-    deny.append("edit")
-base["permissions"] = {**perms, "deny": deny}
-base["read_config_from"] = {**{"cursor": True, "windsurf": True, "claude": True},
-                            **(base.get("read_config_from") or {})}
-json.dump(base, open(out, "w", encoding="utf-8"), indent=2)
-print(note)
-PY
-)"
+      DV_CONFIG_NOTE="$(devin_readonly_config "$DV_CONFIG" "$HOME/.config/devin/config.json")"
       ;;
   esac
   "$DEVIN_BIN" models list --format json >"$DV_TMP/models.json" 2>/dev/null || : >"$DV_TMP/models.json"

@@ -432,7 +432,9 @@ PY
     [ -n "$effective" ] || effective='manual — policy decision unavailable'
   fi
   if [ "$forge" != github ] || [ "$configured" != auto ]; then consequence='manual: unchanged behaviour'
-  elif [ "$effective" = auto ] && [ "$BASE_BRANCH" != dev ]; then effective="manual — auto-merge only targets dev (base $BASE_BRANCH)"
+  elif [ "$effective" = auto ] && [ "$BASE_BRANCH" != dev ]; then
+    effective="manual — auto-merge only targets dev (base $BASE_BRANCH)"
+    consequence="manual: the plan ends at its PR; this repository's sequence waits for your merge"
   elif [ "$effective" = auto ]; then consequence="auto: on whole-feature final-review PASS the kit squash-merges into $BASE_BRANCH"
   else
     consequence="manual: the plan ends at its PR; this repository's sequence waits for your merge"

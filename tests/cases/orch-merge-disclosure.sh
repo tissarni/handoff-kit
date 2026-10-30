@@ -29,9 +29,9 @@ OUT="$(orch start "$plan" --backend claude --publication-owner supervisor 2>&1)"
 [ "$RC" -eq 0 ] || fail "START failed: $OUT"
 printf '%s\n' "$OUT" | /usr/bin/grep -q 'MERGE POLICY' || fail "START omitted disclosure: $OUT"
 assert_contains "${plan%.md}.events.log" 'MERGE POLICY'
-assert_contains "${plan%.md}.events.log" 'effective=auto'
-assert_contains "${plan%.md}.events.log" 'repository-policy=auto forge=github risk=ordinary reason=reviewed override=no effective=auto'
-assert_contains "${plan%.md}.events.log" 'auto: on whole-feature final-review PASS the kit squash-merges into main'
+assert_contains "${plan%.md}.events.log" 'effective=manual — auto-merge only targets dev (base main)'
+assert_contains "${plan%.md}.events.log" 'repository-policy=auto forge=github risk=ordinary reason=reviewed override=no effective=manual — auto-merge only targets dev (base main)'
+assert_contains "${plan%.md}.events.log" "consequence=manual: the plan ends at its PR; this repository's sequence waits for your merge"
 assert_eq "$(sha256sum "$policy" | cut -d' ' -f1)" "$before" "disclosure changed policy bytes"
 
 # A matching override can lift a risky assessment; an override for another
@@ -42,6 +42,11 @@ stop_driver() {
   wait_for 10 test '!' -f "${plan%.md}.lock" || true
 }
 stop_driver
+# Keep the existing policy matrix focused on policy rather than base guarding.
+python3 - "$plan" <<'PY'
+import sys
+p=sys.argv[1]; s=open(p).read().replace('base: main', 'base: dev', 1); open(p,'w').write(s)
+PY
 set_policy_case() {
   local risk="$1" rev="$2" override_rev="$3"
   python3 - "$policy" "$plan" "$repo" "$risk" "$rev" "$override_rev" <<'PY'

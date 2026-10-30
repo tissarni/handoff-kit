@@ -162,6 +162,7 @@ FAIL_CHECK_PLAN="$(scenario_plan failing-check failing-check)" || fail "failing-
 check_held() { /usr/bin/grep -q '^orchestration: awaiting-merge' "$FAIL_CHECK_PLAN" 2>/dev/null; }
 wait_for 90 check_held || fail "failing required check did not hold for merge"
 wait_for 10 event_seen "${FAIL_CHECK_PLAN%.md}.events.log" 'auto-merge refused' || fail "failing-check event was not recorded"
+wait_for 10 event_seen "${FAIL_CHECK_PLAN%.md}.events.log" 'auto-merge refused' || fail "auto-merge refusal event was not recorded"
 assert_contains "${FAIL_CHECK_PLAN%.md}.events.log" 'auto-merge refused'
 if /usr/bin/grep -E '^(POST graphql|PUT |DELETE )' "$SANDBOX/state/gh.log" >/dev/null; then fail "failing required check caused a forge mutation"; fi
 python3 - "$SANDBOX/state/forge.json" <<'PY'
@@ -254,6 +255,7 @@ unset FAKE_CLAUDE
 MALFORMED_PLAN="$(scenario_plan malformed-report malformed)"
 malformed_held() { /usr/bin/grep -q '^orchestration: awaiting-merge' "$MALFORMED_PLAN" 2>/dev/null; }
 wait_for 90 malformed_held || fail "missing verified SHA did not hold for manual verification"
+wait_for 10 event_seen "${MALFORMED_PLAN%.md}.events.log" 'merge outcome ambiguous — verify before resuming' || fail "malformed-output ambiguous event was not recorded"
 assert_contains "${MALFORMED_PLAN%.md}.events.log" 'merge outcome ambiguous — verify before resuming'
 if /usr/bin/grep '^PUT ' "$SANDBOX/state/gh.log" >/dev/null; then fail "missing SHA output logged or sent a merge"; fi
 

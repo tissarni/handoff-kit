@@ -41,7 +41,7 @@ control.write_text('{}')
 (fakebin/'gh').write_text('''#!/usr/bin/env python3
 import json, os, pathlib, sys
 root=pathlib.Path(os.environ['FAKE_ROOT']); state=root/'forge.json'; log=root/'forge.log'; ctl=root/'control.json'
-d=json.loads(state.read_text()); c=json.loads(ctl.read_text()); a=sys.argv[1:]; method=a[a.index('-X')+1] if '-X' in a else 'GET'; ep=next((x for x in a if x.startswith('repos/')), '')
+d=json.loads(state.read_text()); c=json.loads(ctl.read_text()); a=sys.argv[1:]; method=a[a.index('-X')+1] if '-X' in a else 'GET'; ep='graphql' if 'graphql' in a else next((x for x in a if x.startswith('repos/')), '')
 log.open('a').write(method+' '+ep+'\\n')
 reads=sum(1 for x in log.read_text().splitlines() if x.startswith('GET '))
 if c.get('after') == reads: (root/'mutation.py').is_file() and __import__('subprocess').run([sys.executable,str(root/'mutation.py')])
@@ -50,9 +50,14 @@ if ep.endswith('/pulls?state=all&head=acme:feature/x'):
 if '/pulls/7/merge' in ep and method=='PUT':
  assert any('sha='+os.environ['FAKE_HEAD'] in x for x in a) and any('merge_method=squash' in x for x in a); d['merged']=True; state.write_text(json.dumps(d)); print('{"merged":true}'); sys.exit(0)
 if ep.endswith('/pulls/7'):
- print(json.dumps({'number':7,'state':c.get('state','open'),'draft':c.get('draft',False),'merged':d['merged'],'merge_commit_sha':'c'*40 if d['merged'] else None,'mergeable_state':c.get('mergeable_state','clean'),'base':{'ref':c.get('base_ref','dev'),'sha':c.get('base_sha',os.environ['FAKE_BASE']),'repo':{'full_name':c.get('base_repo','acme/widget')}},'head':{'ref':c.get('head_ref','feature/x'),'sha':c.get('head_sha',os.environ['FAKE_HEAD']),'repo':{'full_name':c.get('head_repo','acme/widget')}}})); sys.exit(0)
-if ep.endswith('/commits/'+os.environ['FAKE_HEAD']+'/status'): print('{"state":"success"}'); sys.exit(0)
-if ep.endswith('/commits/'+os.environ['FAKE_HEAD']+'/check-runs'): print('{"check_runs":[{"status":"completed","conclusion":"success"}]}'); sys.exit(0)
+ print(json.dumps({'number':7,'node_id':'PR_node','body':'## Feature\\nfeature\\n## Acceptance\\naccept\\n## Final review\\n'+os.environ['FAKE_HEAD']+'\\n## CI\\nci\\n## Limitations\\nnone','state':c.get('state','open'),'draft':c.get('draft',False),'merged':d['merged'],'merge_commit_sha':'c'*40 if d['merged'] else None,'mergeable_state':c.get('mergeable_state','clean'),'base':{'ref':c.get('base_ref','dev'),'sha':c.get('base_sha',os.environ['FAKE_BASE']),'repo':{'full_name':c.get('base_repo','acme/widget')}},'head':{'ref':c.get('head_ref','feature/x'),'sha':c.get('head_sha',os.environ['FAKE_HEAD']),'repo':{'full_name':c.get('head_repo','acme/widget')}}})); sys.exit(0)
+if ep.endswith('/protection/required_status_checks'): print(json.dumps(c.get('protection',{'contexts':['ci'],'checks':[]}))); sys.exit(0)
+if ep.endswith('/commits/'+os.environ['FAKE_HEAD']+'/status'): print(json.dumps({'state':'success','statuses':c.get('statuses',[])})); sys.exit(0)
+if '/commits/'+os.environ['FAKE_HEAD']+'/check-runs' in ep:
+ print(json.dumps({'total_count':1,'check_runs':c.get('runs',[{'name':'ci','status':'completed','conclusion':'success','started_at':'2026-01-01T00:00:00Z','id':1}])})); sys.exit(0)
+if ep == 'graphql':
+ if c.get('graphql_error'): print('graphql error',file=sys.stderr); sys.exit(1)
+ sys.stdout.write('{}'); sys.exit(0)
 if ep.endswith('/git/ref/heads/feature/x'): print(json.dumps({'object':{'sha':os.environ['FAKE_HEAD']}})); sys.exit(0)
 if ep.endswith('/git/refs/heads/feature/x') and method=='DELETE': sys.exit(0)
 sys.exit(8)
@@ -119,14 +124,18 @@ def unreadable():
     reset(); evidence.unlink(); evidence.mkdir()
 run(setup=unreadable,reason='invalid final-review evidence')
 # Forge identity / readiness negatives; list pulls have no `merged` field.
-for label, ctl, reason in [('no PR',{'rows':[]},'pull request'),('two open PRs',{'rows':[]},'pull request'),('other repo',{'head_repo':'evil/repo'},'pull request'),('base main',{'base_ref':'main'},'base changed'),('wrong head',{'head_sha':'d'*40},'head'),('base changed',{'base_sha':'e'*40},'base changed'),('draft',{'draft':True},'draft'),('not clean',{'mergeable_state':'dirty'},'clean')]:
+for label, ctl, reason in [('no PR',{'rows':[]},'pull request'),('two open PRs',{'rows':[]},'pull request'),('other repo',{'head_repo':'evil/repo'},'pull request'),('base main',{'base_ref':'main'},'base changed'),('wrong head',{'head_sha':'d'*40},'head'),('base changed',{'base_sha':'e'*40},'base changed'),('not clean',{'mergeable_state':'dirty'},'clean')]:
     def setup(ctl=ctl,label=label):
         reset(); control.write_text(json.dumps(ctl))
         if label=='two open PRs':
             p={'number':8,'state':'open','head':{'ref':'feature/x','sha':head,'repo':{'full_name':'acme/widget'}},'base':{'ref':'dev','sha':base,'repo':{'full_name':'acme/widget'}}}; control.write_text(json.dumps({'rows':[p,p]}))
     run(setup=setup,reason=reason)
+# Draft PRs are readied only after checks pass, then re-read before the merge.
+reset(); p,lines=run(setup=lambda: control.write_text(json.dumps({'draft':True})),expect=0)
+assert sum(x.startswith('POST graphql') for x in lines)==1, lines
+assert lines.index('POST graphql') < next(i for i,x in enumerate(lines) if x.startswith('PUT ')), lines
 # Re-check mutations are injected by fake gh between the first and later reads.
-mutations=[('local HEAD moves','local head','local HEAD'),('repo hold recorded','hold','hold'),('assessment changes','assessment','risk breaking-api'),('evidence replaced','evidence','evidence'),('PR head sha changes','head_sha','head'),('draft PR','draft','draft'),('base ref','base_ref','base changed'),('base sha','base_sha','base changed'),('base repo','base_repo','pull request'),('head repo','head_repo','pull request'),('head ref','head_ref','pull request identity'),('mergeable_state','mergeable_state','clean'),('PR state','state','pull request'),('PR count','count','pull request')]
+mutations=[('local HEAD moves','local head','local HEAD'),('repo hold recorded','hold','hold'),('assessment changes','assessment','risk breaking-api'),('evidence replaced','evidence','evidence'),('PR head sha changes','head_sha','head'),('base ref','base_ref','base changed'),('base sha','base_sha','base changed'),('base repo','base_repo','pull request'),('head repo','head_repo','pull request'),('head ref','head_ref','pull request identity'),('mergeable_state','mergeable_state','clean'),('PR state','state','pull request'),('PR count','count','pull request')]
 for label, field, reason in mutations:
     reset()
     mut=root/'mutation.py'

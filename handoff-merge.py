@@ -16,12 +16,13 @@ import re
 import sys
 import tempfile
 import subprocess
-from typing import Any
+from typing import Any, NoReturn
 
 CONFIG = Path.home() / ".config" / "handoff" / "config.env"
 POLICIES = Path.home() / ".config" / "handoff" / "project-policy.json"
 VALID_RISKS = {"ordinary", "breaking-api", "destructive-migration", "auth-permissions-secrets",
                "deployment-infrastructure", "merge-policy", "uncertain"}
+PR_BODY_SECTIONS = ("Feature", "Acceptance", "Final review", "CI", "Limitations")
 
 
 class Refusal(Exception):
@@ -179,7 +180,8 @@ def _gh(method: str, endpoint: str, fields: dict[str, str] | None = None,
     except subprocess.CalledProcessError as exc:
         if "HTTP 404" in (exc.stderr or ""):
             raise MissingRef(f"GitHub resource not found: {endpoint}") from exc
-        raise Refusal(f"GitHub {method} {endpoint} failed") from exc
+        detail = (exc.stderr or "").strip()
+        raise Refusal(f"GitHub {method} {endpoint} failed" + (f": {detail}" if detail else "")) from exc
     except json.JSONDecodeError as exc:
         raise Refusal(f"GitHub {method} {endpoint} failed") from exc
     if not isinstance(data, dict) and not (allow_list and isinstance(data, list)):
@@ -384,9 +386,7 @@ def _finalize_decision(slug: str, plan: str, branch: str, base: str) -> tuple[st
             str(base_repo.get("full_name", "")).lower() != slug.lower() or
             str(head_repo.get("full_name", "")).lower() != slug.lower() or
             head_info.get("ref") != branch or head_info.get("sha") != head or
-            pr.get("draft") is not False or pr.get("mergeable_state") != "clean"):
-        if pr.get("draft") is True:
-            raise Refusal("draft pull request is not eligible")
+            pr.get("mergeable_state") != "clean"):
         if base_info.get("ref") != base or base_info.get("sha") != evidence_base:
             raise Refusal("base changed since final review")
         if head_info.get("sha") != head:
@@ -399,16 +399,114 @@ def _finalize_decision(slug: str, plan: str, branch: str, base: str) -> tuple[st
 
 def _finalize(slug: str, plan: str, branch: str, base: str) -> None:
     _, _, _, number, head, expected_base = _finalize_decision(slug, plan, branch, base)
-    status = _gh("GET", f"repos/{slug}/commits/{head}/status")
-    if status.get("state") != "success":
-        raise Refusal("commit status is not successful")
-    checks = _gh("GET", f"repos/{slug}/commits/{head}/check-runs")
-    runs = checks.get("check_runs")
-    if not isinstance(runs, list) or not runs or any(r.get("status") != "completed" or r.get("conclusion") != "success" for r in runs):
-        raise Refusal("required check runs are absent or unsuccessful")
-    _, _, _, latest_number, latest_head, latest_base = _finalize_decision(slug, plan, branch, base)
+    pr = _gh("GET", f"repos/{slug}/pulls/{number}")
+    body = pr.get("body")
+    sections: dict[str, list[str]] = {}
+    current = None
+    if isinstance(body, str):
+        for line in body.splitlines():
+            if line.startswith("## "):
+                current = line[3:].strip()
+                sections[current] = []
+            elif current is not None:
+                sections[current].append(line)
+    for section in PR_BODY_SECTIONS:
+        content = "\n".join(sections.get(section, [])).strip()
+        if not content or (section == "Final review" and head not in content):
+            raise Refusal(f"incomplete PR body: {section}")
+
+    ready_marked = False
+
+    def refuse(reason: str) -> NoReturn:
+        if ready_marked:
+            raise Refusal(f"refused after marking ready: {reason}")
+        raise Refusal(reason)
+
+    try:
+        protection = _gh("GET", f"repos/{slug}/branches/{base}/protection/required_status_checks")
+        if not isinstance(protection, dict):
+            refuse("malformed required status checks response")
+        contexts, check_defs = protection.get("contexts", []), protection.get("checks", [])
+        if not isinstance(contexts, list) or not isinstance(check_defs, list):
+            refuse("malformed required status checks response")
+        required: set[str] = set()
+        for context in contexts:
+            if not isinstance(context, str):
+                refuse("malformed required status checks response")
+            required.add(context)
+        for check in check_defs:
+            if not isinstance(check, dict) or not isinstance(check.get("context"), str):
+                refuse("malformed required status checks response")
+            required.add(check["context"])
+        fallback = not required
+    except MissingRef:
+        fallback, required = True, set()
+    except Refusal as exc:
+        if "HTTP 403" in str(exc) or "HTTP 404" in str(exc):
+            fallback, required = True, set()
+        else:
+            refuse(str(exc))
+
+    try:
+        runs = []
+        page = 1
+        total_count = None
+        while total_count is None or len(runs) < total_count:
+            checks = _gh("GET", f"repos/{slug}/commits/{head}/check-runs?per_page=100&page={page}")
+            batch = checks.get("check_runs") if isinstance(checks, dict) else None
+            if not isinstance(batch, list):
+                refuse("invalid check-runs response")
+            runs.extend(batch)
+            total_count = checks.get("total_count", len(runs))
+            if not isinstance(total_count, int) or total_count < len(runs) or not batch:
+                if total_count > len(runs) and batch:
+                    refuse("invalid check-runs pagination response")
+                break
+            page += 1
+        status = _gh("GET", f"repos/{slug}/commits/{head}/status")
+        statuses = status.get("statuses") if isinstance(status, dict) else None
+        if not isinstance(runs, list) or not isinstance(statuses, list):
+            refuse("invalid check results response")
+        if fallback:
+            if any(not isinstance(run, dict) or run.get("status") != "completed" or
+                   run.get("conclusion") not in ("success", "neutral", "skipped") for run in runs):
+                refuse("required checks are absent or unsuccessful")
+            if not any(run.get("conclusion") == "success" for run in runs) and not (
+                    status.get("state") == "success" and not statuses):
+                refuse("required checks are absent or unsuccessful")
+        else:
+            def latest(items: list, name_key: str, time_key: str, name: str) -> dict | None:
+                matching = [item for item in items if isinstance(item, dict) and item.get(name_key) == name]
+                if not matching:
+                    return None
+                return max(matching, key=lambda item: (str(item.get(time_key, "")),
+                                                       int(item.get("id", 0)) if str(item.get("id", 0)).isdigit() else 0))
+            for name in required:
+                run = latest(runs, "name", "started_at", name)
+                legacy = latest(statuses, "context", "created_at", name)
+                if run is None and legacy is None:
+                    refuse(f"required check missing: {name}")
+                if run is not None and (run.get("status") != "completed" or run.get("conclusion") != "success"):
+                    refuse(f"required check unsuccessful: {name}")
+                if legacy is not None and legacy.get("state") != "success":
+                    refuse(f"required check unsuccessful: {name}")
+    except Refusal as exc:
+        refuse(str(exc))
+
+    if pr.get("draft") is True:
+        node_id = pr.get("node_id")
+        if not isinstance(node_id, str) or not node_id:
+            refuse("pull request identity changed")
+        query = "mutation($pullRequestId: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $pullRequestId}) { pullRequest { id } } }"
+        _gh("POST", "graphql", {"query": query, "pullRequestId": node_id})
+        ready_marked = True
+
+    try:
+        _, _, _, latest_number, latest_head, latest_base = _finalize_decision(slug, plan, branch, base)
+    except Refusal as exc:
+        refuse(str(exc))
     if (latest_number, latest_head, latest_base) != (number, head, expected_base):
-        raise Refusal("pull request identity changed before merge")
+        refuse("pull request identity changed before merge")
     try:
         _gh("PUT", f"repos/{slug}/pulls/{number}/merge", {"sha": head, "merge_method": "squash"})
     except Refusal:

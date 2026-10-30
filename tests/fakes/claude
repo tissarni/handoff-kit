@@ -153,8 +153,8 @@ if [ "$behavior" = "limit" ]; then
 else
   case "$STAGE" in
     final-review)
-      review_head="$(printf '%s\n' "$PROMPT" | /usr/bin/grep -oE 'head: [0-9a-f]{40}' | /usr/bin/grep -oE '[0-9a-f]{40}' | head -1)"
-      review_base="$(printf '%s\n' "$PROMPT" | /usr/bin/grep -oE 'base: [0-9a-f]{40}' | /usr/bin/grep -oE '[0-9a-f]{40}' | head -1)"
+      review_head="$(printf '%s\n' "$PROMPT" | /usr/bin/grep -oE '^head: [0-9a-f]{40}' | /usr/bin/grep -oE '[0-9a-f]{40}' | head -1)"
+      review_base="$(printf '%s\n' "$PROMPT" | /usr/bin/grep -oE '^base: [0-9a-f]{40}' | /usr/bin/grep -oE '[0-9a-f]{40}' | head -1)"
       case "$behavior" in
         PASS) review_verdict=PASS; blockers=none; review_risk=ordinary ;;
         no-block) STDOUT_TEXT="review completed without a final block" ;;

@@ -104,9 +104,13 @@ awaiting() { /usr/bin/grep -q '^orchestration: awaiting-merge' "$PLAN" 2>/dev/nu
 wait_for 120 awaiting || fail "plan did not reach finalization state"
 python3 - "$SANDBOX/state/setsid.argv" "$SANDBOX/state/env.argv" "${VALUES[*]}" <<'PY' 2>"$SANDBOX/state/argv-check.err" || fail "a launch argv exposed a credential sentinel: $(tail -1 "$SANDBOX/state/argv-check.err")"
 import os,sys
-missing=[p for p in sys.argv[1:3] if not os.path.exists(p)]
-assert not missing, f"argv spy files missing: {missing}"
-for p in sys.argv[1:3]:
+# setsid receives the driver's whole command line, env assignments included, so it is
+# required and must show the driver launch. The env spy is not reached on every
+# platform; its record is checked when present.
+setsid_argv, env_argv = sys.argv[1:3]
+assert os.path.exists(setsid_argv), f"setsid spy file missing: {setsid_argv}"
+assert 'HANDOFF_LAUNCHER=' in open(setsid_argv,'rb').read().decode('utf-8','replace'), "setsid spy did not capture the driver launch"
+for p in [x for x in (setsid_argv, env_argv) if os.path.exists(x)]:
     raw=open(p,'rb').read().decode('utf-8','replace').replace(chr(0),' ')
     for x in sys.argv[3].split():
         i=raw.find(x)

@@ -119,6 +119,7 @@ env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com \
 wait_for 120 test -f "$SANDBOX/state/run-started" || fail "second brief did not reach its wait barrier"
 EVENTS="${plan%.md}.events.log"
 assert_contains "$EVENTS" 'BRIEF CLOSED first'
+assert_contains "$EVENTS" 'effective=auto'
 assert_eq "$(/usr/bin/grep -c 'BRIEF CLOSED' "$EVENTS")" 1 "closed briefs at barrier"
 mutations="$(/usr/bin/grep -E '^(POST |PUT |DELETE )' "$SANDBOX/state/gh.log")"
 assert_eq "$mutations" 'POST repos/test/repo/git/refs' "forge mutations before release"
@@ -161,6 +162,11 @@ python3 - "$second_plan" <<'PY'
 import sys
 p=sys.argv[1]; s=open(p).read().replace('base: main','base: dev',1).replace('branch: feat/test','branch: feat/fresh',1); open(p,'w').write(s)
 PY
+if git -C "$repo" show-ref --verify --quiet refs/heads/feat/fresh; then
+  fail "fresh branch existed before second plan"
+fi
+git -C "$repo" fetch -q origin || fail "could not refresh origin/dev after merge"
+new_dev="$(git -C "$repo" rev-parse origin/dev)"
 export FAKE_CLAUDE=run=wait
 _sbx_env
 env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com \
@@ -168,7 +174,6 @@ env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com \
   --publication-owner supervisor >/dev/null 2>&1
 wait_for 90 test -f "$SANDBOX/state/run-started" || fail "second plan did not start"
 fresh_head="$(git -C "$repo" rev-parse feat/fresh)"
-new_dev="$(git -C "$repo" rev-parse origin/dev)"
 assert_eq "$fresh_head" "$new_dev" "fresh branch did not start at updated origin/dev"
 assert_eq "$(git -C "$repo" show-ref --verify --quiet refs/heads/feat/fresh; echo $?)" 0 "fresh branch missing"
 [ "$fresh_head" != "$main_sha" ] || fail "fresh branch still points at original base"

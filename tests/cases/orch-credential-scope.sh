@@ -11,7 +11,9 @@ VALUES=(sentinel-gh sentinel-github sentinel-enterprise-gh sentinel-enterprise-g
 cat >"$SANDBOX/bin/setsid" <<'SH'
 #!/usr/bin/env bash
 printf '%s\0' "$@" >>"$FAKE_STATE_DIR/setsid.argv"
-exec /usr/bin/setsid "$@"
+# macOS has no setsid binary: fall back the way the orchestrator itself does.
+if [ -x /usr/bin/setsid ]; then exec /usr/bin/setsid "$@"; fi
+exec python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@"
 SH
 cat >"$SANDBOX/bin/env" <<'SH'
 #!/usr/bin/env bash

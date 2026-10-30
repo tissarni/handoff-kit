@@ -10,6 +10,10 @@ PLAN="$(dirname "$BRIEF")/auto-merge-plan.md"
 make_plan "$PLAN" "$BRIEF" "$BRIEF_TWO"
 python3 - "$PLAN" <<'PY'
 import sys
+p=sys.argv[1]; s=open(p).read().replace('base: main', 'base: dev', 1); open(p,'w').write(s)
+PY
+python3 - "$PLAN" <<'PY'
+import sys
 p=sys.argv[1]
 s=open(p).read().replace('updated: 2026-01-01', 'updated: 2026-01-01\nrevision: r1', 1)
 open(p,'w').write(s)
@@ -37,13 +41,13 @@ log.open('a').write(method+' '+endpoint+'\n')
 head=d['head']; base=d['base']
 if endpoint.startswith('repos/test/repo/pulls?state=all&head=test:feat/test'):
  merged=bool(d.get('merged'))
- print(json.dumps([{'number':7,'state':'closed' if merged else 'open','merged_at':'2026-01-01T00:00:00Z' if merged else None,'merge_commit_sha':'c'*40 if merged else None,'head':{'ref':'feat/test','sha':head,'repo':{'full_name':'test/repo'}},'base':{'ref':'main','sha':base,'repo':{'full_name':'test/repo'}}}]))
+ print(json.dumps([{'number':7,'state':'closed' if merged else 'open','merged_at':'2026-01-01T00:00:00Z' if merged else None,'merge_commit_sha':'c'*40 if merged else None,'head':{'ref':'feat/test','sha':head,'repo':{'full_name':'test/repo'}},'base':{'ref':'dev','sha':base,'repo':{'full_name':'test/repo'}}}]))
 elif endpoint.endswith('/pulls/7/merge') and method=='PUT':
  d['puts']=d.get('puts',0)+1; d['merged']=not bool(d.get('put_error')); state.write_text(json.dumps(d))
  if d.get('put_error'): print('HTTP 500',file=sys.stderr); sys.exit(1)
  print('{"merged":true}')
 elif endpoint.endswith('/pulls/7'):
- print(json.dumps({'number':7,'node_id':'PR_node','body':'## Feature\nfeature\n## Acceptance\naccept\n## Final review\n'+head+'\n## CI\nci\n## Limitations\nnone','state':'closed' if d.get('merged') else 'open','draft':False,'merged':bool(d.get('merged')),'merge_commit_sha':'c'*40 if d.get('merged') else None,'mergeable_state':'clean','base':{'ref':'main','sha':base,'repo':{'full_name':'test/repo'}},'head':{'ref':'feat/test','sha':head,'repo':{'full_name':'test/repo'}}}))
+ print(json.dumps({'number':7,'node_id':'PR_node','body':'## Feature\nfeature\n## Acceptance\naccept\n## Final review\n'+head+'\n## CI\nci\n## Limitations\nnone','state':'closed' if d.get('merged') else 'open','draft':False,'merged':bool(d.get('merged')),'merge_commit_sha':'c'*40 if d.get('merged') else None,'mergeable_state':'clean','base':{'ref':'dev','sha':base,'repo':{'full_name':'test/repo'}},'head':{'ref':'feat/test','sha':head,'repo':{'full_name':'test/repo'}}}))
 elif endpoint.endswith('/protection/required_status_checks'): print('{"contexts":["ci"],"checks":[]}')
 elif endpoint.endswith('/commits/'+head+'/status'): print('{"state":"success","statuses":[]}')
 elif '/check-runs' in endpoint:
@@ -56,12 +60,13 @@ elif '/git/refs/heads/feat/test' in endpoint and method=='DELETE':
  d['deletes']=d.get('deletes',0)+1
  if d.get('delete_error'): print('HTTP 500',file=sys.stderr); sys.exit(1)
  d['deleted']=True; state.write_text(json.dumps(d)); sys.exit(0)
-elif endpoint.endswith('/git/ref/heads/main'): print(json.dumps({'object':{'sha':'c'*40}}))
+elif endpoint.endswith('/git/ref/heads/dev'): print(json.dumps({'object':{'sha':'c'*40}}))
 elif '/compare/' in endpoint: print('{"status":"identical"}')
 else: print('unexpected '+method+' '+endpoint,file=sys.stderr); sys.exit(8)
 GH
 chmod +x "$SANDBOX/bin/gh"
 git -C "$SANDBOX/repo_under.test" remote set-url origin https://github.com/test/repo
+git -C "$SANDBOX/repo_under.test" update-ref refs/remotes/origin/dev main
 git -C "$SANDBOX/repo_under.test" checkout -q -b feat/test
 FAKE_HEAD="$(git -C "$SANDBOX/repo_under.test" rev-parse HEAD)"
 FAKE_BASE="$(git -C "$SANDBOX/repo_under.test" rev-parse HEAD)"
@@ -77,12 +82,12 @@ env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com \
 is_done() { /usr/bin/grep -q '^orchestration: done' "$PLAN" 2>/dev/null; }
 wait_for 120 is_done || fail "auto merge did not finish: $(head -1 "${PLAN%.md}.status.md" 2>/dev/null)"
 EVENTS="${PLAN%.md}.events.log"
-assert_contains "$EVENTS" "MERGED ccccccc into main — verified"
+assert_contains "$EVENTS" "MERGED ccccccc into dev — verified"
 assert_contains "$EVENTS" 'branch cleaned'
 assert_eq "$(/usr/bin/grep -c 'BRIEF CLOSED' "$EVENTS")" 2 "closed brief count"
 close_lines="$(/usr/bin/grep -n 'BRIEF CLOSED' "$EVENTS" | cut -d: -f1 | tr '\n' ' ')"
 review_line="$(/usr/bin/grep -n 'FINAL REVIEW PASS' "$EVENTS" | cut -d: -f1)"
-merge_line="$(/usr/bin/grep -n 'MERGED ccccccc into main — verified' "$EVENTS" | cut -d: -f1)"
+merge_line="$(/usr/bin/grep -n 'MERGED ccccccc into dev — verified' "$EVENTS" | cut -d: -f1)"
 set -- $close_lines
 [ "$1" -lt "$2" ] && [ "$2" -lt "$review_line" ] && [ "$review_line" -lt "$merge_line" ] || fail "event order was wrong: $close_lines $review_line $merge_line"
 assert_eq "$(/usr/bin/grep -c '^PUT repos/' "$SANDBOX/state/gh.log")" 1 "merge PUT count"
@@ -102,6 +107,10 @@ scenario_plan() {
   brief="$(make_brief testsub "$name.md" draft)"
   plan="$(dirname "$brief")/$name-plan.md"
   make_plan "$plan" "$brief"
+  python3 - "$plan" <<'PY'
+import sys
+p=sys.argv[1]; s=open(p).read().replace('base: main', 'base: dev', 1); open(p,'w').write(s)
+PY
   python3 - "$plan" <<'PY'
 import sys
 p=sys.argv[1]; s=open(p).read().replace('updated: 2026-01-01', 'updated: 2026-01-01\nrevision: r1', 1); open(p,'w').write(s)
@@ -186,7 +195,7 @@ CLEANUP_PLAN="$(scenario_plan cleanup-failure cleanup-failure)" || fail "cleanup
 cleanup_done() { /usr/bin/grep -q '^orchestration: done' "$CLEANUP_PLAN" 2>/dev/null; }
 wait_for 90 cleanup_done || fail "cleanup failure did not complete merged plan"
 wait_for 10 event_seen "${CLEANUP_PLAN%.md}.events.log" 'cleanup failed' || fail "cleanup-failure event was not recorded"
-assert_contains "${CLEANUP_PLAN%.md}.events.log" 'MERGED ccccccc into main — verified'
+assert_contains "${CLEANUP_PLAN%.md}.events.log" 'MERGED ccccccc into dev — verified'
 assert_contains "${CLEANUP_PLAN%.md}.events.log" 'cleanup failed'
 assert_contains "${CLEANUP_PLAN%.md}.events.log" 'feat/test'
 

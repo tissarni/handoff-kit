@@ -339,6 +339,8 @@ def _review_evidence(plan: str) -> tuple[str, str, str, str, str, str]:
 
 
 def _finalize_decision(slug: str, plan: str, branch: str, base: str) -> tuple[str, str, str, int, str, str, bool]:
+    if base != "dev":
+        raise Refusal("automatic merges only target dev")
     if Path(slug).is_dir():
         raise Refusal("use owner/name as --repository; local paths are not forge identities")
     policy_path, task, revision, risk, head, evidence_base = _review_evidence(plan)

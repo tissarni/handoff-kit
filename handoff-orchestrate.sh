@@ -432,6 +432,7 @@ PY
     [ -n "$effective" ] || effective='manual — policy decision unavailable'
   fi
   if [ "$forge" != github ] || [ "$configured" != auto ]; then consequence='manual: unchanged behaviour'
+  elif [ "$effective" = auto ] && [ "$BASE_BRANCH" != dev ]; then effective="manual — auto-merge only targets dev (base $BASE_BRANCH)"
   elif [ "$effective" = auto ]; then consequence="auto: on whole-feature final-review PASS the kit squash-merges into $BASE_BRANCH"
   else
     consequence="manual: the plan ends at its PR; this repository's sequence waits for your merge"
@@ -1497,6 +1498,15 @@ phase_done() {
       fi
       before_awaiting_merge
       set_final_reviewed_head "$review_head"
+      if [ "$BASE_BRANCH" != dev ]; then
+        reason="auto-merge only targets dev; base is $BASE_BRANCH"
+        set_plan_orch awaiting-merge; set_phase_status done; release_lock
+        write_status "AWAITING MERGE · final review PASS ${review_head:0:7} · merge into $BASE_BRANCH not attempted · $(ts "$(now_s)")" "$(printf 'PR: %s' "$(pr_url)")"
+        log_event "AWAITING MERGE ${review_head:0:7} — $reason"
+        notify "AWAITING MERGE · final review PASS ${review_head:0:7} · $reason"
+        echo "awaiting merge into $BASE_BRANCH: $reason"
+        return 0
+      fi
       auto_finalize "$merge_helper" "$review_head"
       return 0
     fi

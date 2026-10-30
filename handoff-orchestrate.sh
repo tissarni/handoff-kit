@@ -1271,7 +1271,7 @@ launch_driver() {
   mkdir -p "$driver_dir"
   cp "$KIT/handoff-launch.sh" "$driver_dir/handoff-launch.sh"
   cp "$KIT/handoff-orchestrate.sh" "$driver_dir/handoff-orchestrate.sh"
-  in_new_session env VAULT="$VAULT" HANDOFF_KIT="$KIT" HANDOFF_DEFAULTS="$HANDOFF_DEFAULTS" HANDOFF_PROJECTS="$HANDOFF_PROJECTS" HANDOFF_LAUNCHER="$driver_dir/handoff-launch.sh" \
+  in_new_session env VAULT="$VAULT" HANDOFF_KIT="$KIT" HANDOFF_DEFAULTS="$HANDOFF_DEFAULTS" HANDOFF_PROJECTS="$HANDOFF_PROJECTS" HANDOFF_LAUNCHER="$driver_dir/handoff-launch.sh" GH_TOKEN="${GH_TOKEN:-}" GH_HOST="${GH_HOST:-}" \
     bash "$driver_dir/handoff-orchestrate.sh" __driver "$PLAN_ARG" --backend "$BACKEND" "${MODEL_FLAGS[@]}" "${PUBLICATION_OWNER_FLAGS[@]}" \
     >"$DRIVER_LOG" 2>&1 </dev/null &
   local dpid=$!
@@ -1448,13 +1448,7 @@ phase_done() {
       fi
       before_awaiting_merge
       set_final_reviewed_head "$review_head"
-      set_plan_orch awaiting-merge
-      set_phase_status done
-      release_lock
-      write_status "AWAITING MERGE · final review PASS ${review_head:0:7} · merge into $BASE_BRANCH not yet verified · $(ts "$(now_s)")" "$(printf 'PR: %s' "$(pr_url)")"
-      log_event "AWAITING MERGE ${review_head:0:7} — final review PASS; merge into $BASE_BRANCH not yet verified"
-      notify "AWAITING MERGE · final review PASS ${review_head:0:7} · merge into $BASE_BRANCH not yet verified"
-      echo "awaiting merge into $BASE_BRANCH"
+      auto_finalize "$merge_helper" "$review_head"
       return 0
     fi
     set_plan_orch done
@@ -1470,6 +1464,54 @@ phase_done() {
   [ $((PLAN_PHASE_IDX+1)) -ge "$PLAN_PHASE_COUNT" ] && retire_watchdog
   notify "DONE · phase $((PLAN_PHASE_IDX+1))/$PLAN_PHASE_COUNT · $PLAN_PHASE_NAME · $PLAN_BRIEF_COUNT briefs closed"
   echo "phase $((PLAN_PHASE_IDX+1)) complete"
+}
+
+auto_finalize() {  # $1 = merge helper, $2 = reviewed head
+  local helper="$1" reviewed="$2" slug out rc merge_sha cleanup reason cleanup_event clf
+  slug="$(github_repo_slug)" || slug=""
+  if [ -z "$slug" ]; then
+    rc=1; out="finalize refused: GitHub repository identity unavailable"
+  elif [ -z "${GH_TOKEN:-}" ] || [ -z "${GH_HOST:-}" ]; then
+    rc=1; out="finalize refused: GH_TOKEN and GH_HOST are required"
+  else
+    if out="$(python3 "$helper" finalize --repository "$slug" --plan "$PLAN" --branch "$WANT_BRANCH" --base "$BASE_BRANCH" 2>&1)"; then rc=0; else rc=$?; fi
+  fi
+  case "$rc" in
+    0|4)
+      merge_sha="$(printf '%s\n' "$out" | /usr/bin/grep -E '^merge-sha: [0-9a-fA-F]{40}$' | tail -1 | cut -d' ' -f2)"
+      cleanup="$(printf '%s\n' "$out" | /usr/bin/grep -E '^branch-cleanup: (deleted|preserved|already-deleted|failed)$' | tail -1 | cut -d' ' -f2)"
+      if ! [[ "$merge_sha" =~ ^[0-9a-fA-F]{40}$ ]] || { [ "$rc" -eq 0 ] && [ "$cleanup" = failed ]; } || { [ "$rc" -eq 4 ] && [ "$cleanup" != failed ]; }; then
+        rc=3
+      else
+        case "$cleanup" in
+          deleted) cleanup_event="branch cleaned" ;;
+          already-deleted) cleanup_event="branch cleaned (already deleted)" ;;
+          preserved) cleanup_event="branch preserved" ;;
+          failed) reason="$(printf '%s\n' "$out" | /usr/bin/grep '^handoff-merge:' | tail -1 | sed 's/^handoff-merge: //')"; cleanup_event="cleanup failed — ${reason:-reason unavailable}" ;;
+        esac
+        log_event "MERGED ${merge_sha:0:7} into $BASE_BRANCH — verified"
+        log_event "$cleanup_event${cleanup:+ — $WANT_BRANCH}"
+        set_plan_orch done; set_phase_status done; release_lock
+        clf="$(checkout_lock_path 2>/dev/null)" || clf=""
+        if [ -n "$clf" ] && [ -f "$clf" ] && [ "$(head -1 "$clf")" = "$(readlink -f "$PLAN")" ]; then rm -f "$clf"; fi
+        write_status "DONE · merged into $BASE_BRANCH · $(ts "$(now_s)")" "$(phase_summary)"
+        retire_watchdog
+        notify "DONE · merged ${merge_sha:0:7} into $BASE_BRANCH — ${cleanup_event}${cleanup:+ ($WANT_BRANCH)}"
+        echo "merged and verified: ${merge_sha:0:7} into $BASE_BRANCH"
+        [ "$rc" -eq 0 ] && return 0
+        return 0
+      fi
+      ;;
+  esac
+  case "$rc" in
+    1) reason="$(printf '%s\n' "$out" | tail -1 | sed 's/^handoff-merge: //')"; reason="auto-merge refused — ${reason:-reason unavailable}" ;;
+    *) reason="merge outcome ambiguous — verify before resuming" ;;
+  esac
+  set_plan_orch awaiting-merge; set_phase_status done; release_lock
+  write_status "AWAITING MERGE · final review PASS ${reviewed:0:7} · merge into $BASE_BRANCH not yet verified · $(ts "$(now_s)")" "$(printf 'PR: %s' "$(pr_url)")"
+  log_event "AWAITING MERGE ${reviewed:0:7} — $reason"
+  notify "AWAITING MERGE · final review PASS ${reviewed:0:7} · $reason"
+  echo "awaiting merge into $BASE_BRANCH: $reason"
 }
 
 # Step 3 inserts the automatic merge attempt here before the held state is recorded.

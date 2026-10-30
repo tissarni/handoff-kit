@@ -576,17 +576,27 @@ def _verify_merge_and_cleanup(slug: str, number: int, head: str, branch: str, ba
         ref = _gh("GET", f"repos/{slug}/git/ref/heads/{branch}")
     except MissingRef:
         print("branch already deleted")
+        print(f"merge-sha: {merge_sha}")
+        print("branch-cleanup: already-deleted")
         return
     except Refusal as exc:
+        print(f"merge-sha: {merge_sha}")
+        print("branch-cleanup: failed")
         raise FinalizeFailure("merged, cleanup failed: branch ref could not be read", 4) from exc
     if ref.get("object", {}).get("sha") != head:
         print("branch preserved")
+        print(f"merge-sha: {merge_sha}")
+        print("branch-cleanup: preserved")
         return
     try:
         _gh("DELETE", f"repos/{slug}/git/refs/heads/{branch}")
     except Refusal as exc:
+        print(f"merge-sha: {merge_sha}")
+        print("branch-cleanup: failed")
         raise FinalizeFailure("merged, cleanup failed: branch deletion failed", 4) from exc
     print("merged and verified; owned feature branch deleted")
+    print(f"merge-sha: {merge_sha}")
+    print("branch-cleanup: deleted")
 
 
 def main() -> int:

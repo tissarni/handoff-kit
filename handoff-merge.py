@@ -33,6 +33,12 @@ class MissingRef(Refusal):
     pass
 
 
+class FinalizeFailure(Refusal):
+    def __init__(self, message: str, exit_code: int):
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
 def _atomic_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -332,7 +338,7 @@ def _review_evidence(plan: str) -> tuple[str, str, str, str, str, str]:
     return repo, str(feature), revision, record["risk"], record["head"].lower(), record["base"].lower()
 
 
-def _finalize_decision(slug: str, plan: str, branch: str, base: str) -> tuple[str, str, str, int, str, str]:
+def _finalize_decision(slug: str, plan: str, branch: str, base: str) -> tuple[str, str, str, int, str, str, bool]:
     if Path(slug).is_dir():
         raise Refusal("use owner/name as --repository; local paths are not forge identities")
     policy_path, task, revision, risk, head, evidence_base = _review_evidence(plan)
@@ -358,19 +364,37 @@ def _finalize_decision(slug: str, plan: str, branch: str, base: str) -> tuple[st
     rows = _gh("GET", f"repos/{slug}/pulls?state=all&head={owner}:{branch}", allow_list=True, paginate=True)
     if not isinstance(rows, list):
         raise Refusal("GitHub returned an invalid pull request list")
-    opened = []
+    candidates = []
+    base_mismatches = []
     for candidate in rows:
-        if not isinstance(candidate, dict) or candidate.get("state") != "open":
+        if not isinstance(candidate, dict):
             continue
         candidate_head = candidate.get("head")
+        candidate_base = candidate.get("base")
         candidate_repo = candidate_head.get("repo") if isinstance(candidate_head, dict) else None
-        if isinstance(candidate_head, dict) and isinstance(candidate_repo, dict):
-            if (str(candidate_repo.get("full_name", "")).lower() == slug.lower() and
-                    candidate_head.get("ref") == branch):
-                opened.append(candidate)
-    if len(opened) != 1:
-        raise Refusal("expected exactly one open pull request")
-    pr = opened[0]
+        target_repo = candidate_base.get("repo") if isinstance(candidate_base, dict) else None
+        if (isinstance(candidate_head, dict) and isinstance(candidate_base, dict)
+                and isinstance(candidate_repo, dict) and isinstance(target_repo, dict)
+                and str(candidate_repo.get("full_name", "")).lower() == slug.lower()
+                and str(target_repo.get("full_name", "")).lower() == slug.lower()
+                and candidate_head.get("ref") == branch and candidate_head.get("sha") == head):
+            if candidate_base.get("ref") == base:
+                candidates.append(candidate)
+            else:
+                base_mismatches.append(candidate)
+    opened = [pr for pr in candidates if pr.get("state") == "open"]
+    merged_candidates = [pr for pr in candidates
+                         if pr.get("state") == "closed" and pr.get("merged_at") is not None]
+    if len(opened) == 1 and not merged_candidates:
+        pr, already_merged = opened[0], False
+    elif not opened and len(merged_candidates) == 1:
+        pr, already_merged = merged_candidates[0], True
+    else:
+        numbers = [str(pr.get("number", "unknown")) for pr in candidates]
+        if not candidates and base_mismatches:
+            stale_numbers = ", ".join(str(pr.get("number", "unknown")) for pr in base_mismatches)
+            raise Refusal(f"base changed; pull request candidates: {stale_numbers}")
+        raise Refusal("ambiguous pull request candidates: " + (", ".join(numbers) or "none"))
     number = pr.get("number")
     if not isinstance(number, int) or isinstance(number, bool):
         raise Refusal("matching open pull request is invalid")
@@ -381,12 +405,14 @@ def _finalize_decision(slug: str, plan: str, branch: str, base: str) -> tuple[st
     head_repo, base_repo = head_info.get("repo"), base_info.get("repo")
     if not isinstance(head_repo, dict) or not isinstance(base_repo, dict):
         raise Refusal("pull request identity changed")
-    if (pr.get("state") != "open" or base_info.get("ref") != base or
-            base_info.get("sha") != evidence_base or
+    if (pr.get("state") != ("closed" if already_merged else "open") or base_info.get("ref") != base or
+            (not already_merged and base_info.get("sha") != evidence_base) or
             str(base_repo.get("full_name", "")).lower() != slug.lower() or
             str(head_repo.get("full_name", "")).lower() != slug.lower() or
             head_info.get("ref") != branch or head_info.get("sha") != head or
-            pr.get("mergeable_state") != "clean"):
+            (not already_merged and pr.get("mergeable_state") != "clean") or
+            (already_merged and (pr.get("merged") is not True or not isinstance(pr.get("merge_commit_sha"), str)
+                                 or not re.fullmatch(r"[0-9a-fA-F]{40}", pr["merge_commit_sha"])) )):
         if base_info.get("ref") != base or base_info.get("sha") != evidence_base:
             raise Refusal("base changed since final review")
         if head_info.get("sha") != head:
@@ -394,11 +420,15 @@ def _finalize_decision(slug: str, plan: str, branch: str, base: str) -> tuple[st
         if pr.get("mergeable_state") != "clean":
             raise Refusal("pull request is not clean")
         raise Refusal("pull request identity changed")
-    return policy_path, task, revision, number, head, evidence_base
+    return policy_path, task, revision, number, head, evidence_base, already_merged
 
 
 def _finalize(slug: str, plan: str, branch: str, base: str) -> None:
-    _, _, _, number, head, expected_base = _finalize_decision(slug, plan, branch, base)
+    _, _, _, number, head, expected_base, already_merged = _finalize_decision(slug, plan, branch, base)
+    if already_merged:
+        print("already merged")
+        _verify_merge_and_cleanup(slug, number, head, branch, base)
+        return
     pr = _gh("GET", f"repos/{slug}/pulls/{number}")
     body = pr.get("body")
     sections: dict[str, list[str]] = {}
@@ -502,30 +532,61 @@ def _finalize(slug: str, plan: str, branch: str, base: str) -> None:
         ready_marked = True
 
     try:
-        _, _, _, latest_number, latest_head, latest_base = _finalize_decision(slug, plan, branch, base)
+        _, _, _, latest_number, latest_head, latest_base, latest_merged = _finalize_decision(slug, plan, branch, base)
     except Refusal as exc:
         refuse(str(exc))
-    if (latest_number, latest_head, latest_base) != (number, head, expected_base):
+    if (latest_number, latest_head, latest_base, latest_merged) != (number, head, expected_base, False):
         refuse("pull request identity changed before merge")
+    reconciled = None
     try:
         _gh("PUT", f"repos/{slug}/pulls/{number}/merge", {"sha": head, "merge_method": "squash"})
     except Refusal:
-        # Lost/ambiguous write response: reconcile read-only; never repeat the write.
-        merged = _gh("GET", f"repos/{slug}/pulls/{number}")
-        if merged.get("merged") is not True or merged.get("head", {}).get("sha") != head:
-            raise Refusal("merge response was ambiguous and read-back did not verify merge")
-    merged = _gh("GET", f"repos/{slug}/pulls/{number}")
-    if merged.get("merged") is not True or merged.get("head", {}).get("sha") != head or not merged.get("merge_commit_sha"):
-        raise Refusal("squash merge could not be verified")
-    ref = _gh("GET", f"repos/{slug}/git/ref/heads/{branch}")
-    if ref.get("object", {}).get("sha") == head:
         try:
-            _gh("DELETE", f"repos/{slug}/git/refs/heads/{branch}")
+            reconciled = _gh("GET", f"repos/{slug}/pulls/{number}")
         except Refusal as exc:
-            raise Refusal("merge verified but owned feature branch cleanup failed") from exc
-        print("merged and verified; owned feature branch deleted")
-    else:
-        print("merged and verified; feature branch changed, preserved")
+            raise FinalizeFailure("ambiguous: merge read-back failed", 3) from exc
+        if reconciled.get("merged") is not True or reconciled.get("head", {}).get("sha") != head:
+            raise FinalizeFailure("ambiguous: merge response was not verified", 3)
+    _verify_merge_and_cleanup(slug, number, head, branch, base, reconciled)
+
+
+def _verify_merge_and_cleanup(slug: str, number: int, head: str, branch: str, base: str,
+                              merged: dict | None = None) -> None:
+    try:
+        if merged is None:
+            merged = _gh("GET", f"repos/{slug}/pulls/{number}")
+        assert merged is not None
+        merge_sha = merged.get("merge_commit_sha")
+        if (merged.get("merged") is not True or merged.get("head", {}).get("sha") != head
+                or not isinstance(merge_sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", merge_sha)):
+            raise FinalizeFailure("ambiguous: squash merge could not be verified", 3)
+        base_ref = _gh("GET", f"repos/{slug}/git/ref/heads/{base}")
+        base_sha = base_ref.get("object", {}).get("sha")
+        if not isinstance(base_sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", base_sha):
+            raise FinalizeFailure("ambiguous: base ref could not be verified", 3)
+        if base_sha != merge_sha:
+            comparison = _gh("GET", f"repos/{slug}/compare/{merge_sha}...{base_sha}")
+            if comparison.get("status") not in ("identical", "behind"):
+                raise FinalizeFailure("ambiguous: merge commit is not contained in base", 3)
+    except FinalizeFailure:
+        raise
+    except Refusal as exc:
+        raise FinalizeFailure("ambiguous: merge/base read-back failed", 3) from exc
+    try:
+        ref = _gh("GET", f"repos/{slug}/git/ref/heads/{branch}")
+    except MissingRef:
+        print("branch already deleted")
+        return
+    except Refusal as exc:
+        raise FinalizeFailure("merged, cleanup failed: branch ref could not be read", 4) from exc
+    if ref.get("object", {}).get("sha") != head:
+        print("branch preserved")
+        return
+    try:
+        _gh("DELETE", f"repos/{slug}/git/refs/heads/{branch}")
+    except Refusal as exc:
+        raise FinalizeFailure("merged, cleanup failed: branch deletion failed", 4) from exc
+    print("merged and verified; owned feature branch deleted")
 
 
 def main() -> int:
@@ -687,7 +748,7 @@ def main() -> int:
         raise Refusal("unsupported operation")
     except Refusal as exc:
         print(f"handoff-merge: {exc}", file=sys.stderr)
-        return 1
+        return exc.exit_code if isinstance(exc, FinalizeFailure) else 1
 
 
 if __name__ == "__main__":

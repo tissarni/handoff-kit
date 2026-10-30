@@ -60,7 +60,9 @@ if ep == 'graphql':
  sys.stdout.write('{}'); sys.exit(0)
 if ep.endswith('/git/ref/heads/feature/x'): print(json.dumps({'object':{'sha':os.environ['FAKE_HEAD']}})); sys.exit(0)
 if ep.endswith('/git/ref/heads/dev'): print(json.dumps({'object':{'sha':os.environ['FAKE_BASE']}})); sys.exit(0)
-if '/compare/' in ep: print(json.dumps({'status':'identical'})); sys.exit(0)
+if '/compare/' in ep:
+ if ep != 'repos/acme/widget/compare/'+'c'*40+'...'+os.environ['FAKE_BASE']: print('unexpected compare endpoint: '+ep,file=sys.stderr); sys.exit(9)
+ print(json.dumps({'status':'identical'})); sys.exit(0)
 if ep.endswith('/git/refs/heads/feature/x') and method=='DELETE': sys.exit(0)
 sys.exit(8)
 ''')

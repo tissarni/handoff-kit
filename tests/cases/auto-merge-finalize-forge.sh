@@ -34,14 +34,17 @@ root=pathlib.Path(os.environ['FAKE_ROOT']); state=root/'forge.json'; log=root/'f
 d=json.loads(state.read_text()); c=json.loads(ctl.read_text()); a=sys.argv[1:]; method=a[a.index('-X')+1] if '-X' in a else 'GET'; ep='graphql' if 'graphql' in a else next((x for x in a if x.startswith('repos/')), '')
 log.open('a').write(method+' '+ep+'\\n')
 if ep.endswith('/pulls?state=all&head=acme:feature/x'):
- p={'number':7,'state':'open','merged_at':None,'merge_commit_sha':None,'head':{'ref':'feature/x','sha':c.get('list_head',os.environ['FAKE_HEAD']),'repo':{'full_name':'acme/widget'}},'base':{'ref':'dev','sha':os.environ['FAKE_BASE'],'repo':{'full_name':'acme/widget'}},'draft':c.get('draft',True)}; print(json.dumps(c.get('rows',[p]))); sys.exit(0)
+ merged=c.get('initial_merged',False)
+ p={'number':7,'state':'closed' if merged else 'open','merged_at':'2026-01-01T00:00:00Z' if merged else None,'merge_commit_sha':'c'*40 if merged else None,'head':{'ref':'feature/x','sha':c.get('list_head',os.environ['FAKE_HEAD']),'repo':{'full_name':'acme/widget'}},'base':{'ref':'dev','sha':os.environ['FAKE_BASE'],'repo':{'full_name':'acme/widget'}},'draft':c.get('draft',True)}; print(json.dumps(c.get('rows',[p]))); sys.exit(0)
 if '/pulls/7/merge' in ep and method=='PUT':
  assert any('sha='+os.environ['FAKE_HEAD'] in x for x in a) and any('merge_method=squash' in x for x in a)
  d['puts']=d.get('puts',0)+1
- if c.get('put_error'): state.write_text(json.dumps(d)); print('HTTP 500',file=sys.stderr); sys.exit(1)
+ if c.get('put_error'):
+  if c.get('merge_on_error'): d['merged']=True
+  state.write_text(json.dumps(d)); print('HTTP 500',file=sys.stderr); sys.exit(1)
  d['merged']=True; state.write_text(json.dumps(d)); print('{"merged":true}'); sys.exit(0)
 if ep.endswith('/pulls/7'):
- if c.get('pr_get_error'): print('HTTP 500',file=sys.stderr); sys.exit(1)
+ if c.get('pr_get_error') and (not c.get('pr_get_error_after_put') or d.get('puts')): print('HTTP 500',file=sys.stderr); sys.exit(1)
  merged=d.get('merged',False) or c.get('initial_merged',False)
  print(json.dumps({'number':7,'node_id':'PR_node','body':c.get('body','## Feature\\nfeature\\n## Acceptance\\naccept\\n## Final review\\n'+os.environ['FAKE_HEAD']+'\\n## CI\\nci\\n## Limitations\\nnone'),'state':'closed' if merged else 'open','draft':c.get('draft',True),'merged':merged,'merge_commit_sha':'c'*40 if merged else None,'mergeable_state':'clean','base':{'ref':'dev','sha':os.environ['FAKE_BASE'],'repo':{'full_name':'acme/widget'}},'head':{'ref':'feature/x','sha':('d'*40 if d.get('ready') and c.get('post_ready_head') else c.get('head_sha',os.environ['FAKE_HEAD'])),'repo':{'full_name':'acme/widget'}}})); sys.exit(0)
 if ep.endswith('/protection/required_status_checks'):
@@ -69,6 +72,7 @@ if '/git/refs/heads/feature/x' in ep and method=='DELETE':
  sys.exit(0)
 if '/git/ref/heads/dev' in ep: print(json.dumps({'object':{'sha':c.get('base_sha',os.environ['FAKE_BASE'])}})); sys.exit(0)
 if '/compare/' in ep:
+ if ep != 'repos/acme/widget/compare/'+'c'*40+'...'+os.environ['FAKE_BASE']: print('unexpected compare endpoint: '+ep,file=sys.stderr); sys.exit(9)
  if c.get('compare_error'): print('HTTP 500',file=sys.stderr); sys.exit(1)
  print(json.dumps({'status':c.get('compare_status','identical')})); sys.exit(0)
 sys.exit(8)
@@ -88,8 +92,9 @@ def exercise(label, cfg, expect=0, reason=None, graphql=None, puts=None, deletes
  p=subprocess.run(argv,text=True,capture_output=True,env=env)
  lines=log.read_text().splitlines()
  if p.returncode != expect: raise AssertionError(f'{label}: exit {p.returncode}, wanted {expect}: {p.stderr}; calls={lines}')
- if reason and reason not in p.stderr: raise AssertionError(f'{label}: missing refusal {reason!r}: {p.stderr}')
- if expect and (not p.stderr.startswith('handoff-merge: ') or any(x.split(' ',1)[0] in ('PUT','PATCH','DELETE') or (x.startswith('POST ') and x != 'POST graphql') for x in lines) or ('POST graphql' in lines and graphql is False)): raise AssertionError(f'{label}: uncontrolled refusal or write: {p.stderr} {lines}')
+ channel = p.stdout if expect == 0 else p.stderr
+ if reason and reason not in channel: raise AssertionError(f'{label}: missing status/reason {reason!r}: stdout={p.stdout!r} stderr={p.stderr!r}')
+ if expect == 1 and (not p.stderr.startswith('handoff-merge: ') or any(x.split(' ',1)[0] in ('PUT','PATCH','DELETE') or (x.startswith('POST ') and x != 'POST graphql') for x in lines) or ('POST graphql' in lines and graphql is False)): raise AssertionError(f'{label}: uncontrolled refusal or write: {p.stderr} {lines}')
  if graphql is not None and ('POST graphql' in lines) != graphql: raise AssertionError(f'{label}: GraphQL calls unexpected: {lines}')
  expected_puts = (0 if expect else 1) if puts is None else puts
  if sum(x.startswith('PUT ') for x in lines) != expected_puts: raise AssertionError(f'{label}: expected {expected_puts} merge PUTs: {lines}')
@@ -117,13 +122,15 @@ for label,cfg,reason,gql in [
  exercise(label,cfg,expect=1,reason=reason,graphql=gql)
 for label,cfg,expect,reason,puts,deletes in [
  ('already merged restart',{'draft':False,'initial_merged':True},0,'already merged',0,1),
- ('PUT error reconciled merged',{'draft':False,'put_error':True},0,None,1,1),
+ ('PUT error reconciled merged',{'draft':False,'put_error':True,'merge_on_error':True},0,None,1,1),
  ('PUT error remains unmerged',{'draft':False,'put_error':True},3,'ambiguous',1,0),
- ('base points at merge',{'draft':False},0,None,1,1),
+ ('base points at merge',{'draft':False,'base_sha':'c'*40},0,None,1,1),
+ ('compare identical',{'draft':False,'compare_status':'identical'},0,None,1,1),
  ('compare behind',{'draft':False,'compare_status':'behind'},0,None,1,1),
  ('compare diverged',{'draft':False,'compare_status':'diverged'},3,'ambiguous',1,0),
  ('compare ahead',{'draft':False,'compare_status':'ahead'},3,'ambiguous',1,0),
- ('read-back GET fails',{'draft':False,'pr_get_error':True},3,'ambiguous',1,0),
+ ('read-back GET fails',{'draft':False,'pr_get_error':True,'pr_get_error_after_put':True},3,'ambiguous',1,0),
+ ('compare GET fails',{'draft':False,'compare_error':True},3,'ambiguous',1,0),
  ('branch moved',{'draft':False,'branch_moved':True},0,'branch preserved',1,0),
  ('delete fails',{'draft':False,'delete_error':True},4,'cleanup failed',1,1),
  ('branch already absent',{'draft':False,'initial_merged':True,'ref_missing':True},0,'branch already deleted',0,0),

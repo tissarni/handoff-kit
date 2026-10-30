@@ -117,6 +117,21 @@ state={'head':sys.argv[2],'base':sys.argv[3]}
 if sys.argv[4]=='already': state.update(merged=True,deleted=True)
 open(sys.argv[1],'w').write(json.dumps(state))
 PY
+  if [ "$mode" = malformed ]; then
+    cp "$SANDBOX/kit/handoff-merge.py" "$SANDBOX/kit/handoff-merge-real.py"
+    cat >"$SANDBOX/kit/handoff-merge.py" <<'PY'
+#!/usr/bin/env python3
+import pathlib,runpy,sys
+if len(sys.argv)>1 and sys.argv[1]=='policy-get': print('auto'); raise SystemExit(0)
+if len(sys.argv)>1 and sys.argv[1]=='finalize':
+ print('merged and verified')
+ print('branch-cleanup: deleted')
+ raise SystemExit(0)
+sys.argv[0]=str(pathlib.Path(__file__).with_name('handoff-merge-real.py'))
+runpy.run_path(sys.argv[0],run_name='__main__')
+PY
+    chmod +x "$SANDBOX/kit/handoff-merge.py"
+  fi
   : >"$SANDBOX/state/gh.log"
   _sbx_env
   env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com bash "$SANDBOX/kit/handoff-orchestrate.sh" start "$plan" --backend claude --publication-owner supervisor >/dev/null 2>&1
@@ -224,5 +239,11 @@ phase_one_done() { /usr/bin/grep -q 'PHASE DONE 1' "${PHASE_PLAN%.md}.events.log
 wait_for 120 phase_one_done || fail "intermediate phase did not finish"
 if /usr/bin/grep -E '^(POST graphql|PUT |DELETE )' "$SANDBOX/state/gh.log" >/dev/null; then fail "intermediate phase attempted a merge"; fi
 unset FAKE_CLAUDE
+
+MALFORMED_PLAN="$(scenario_plan malformed-report malformed)"
+malformed_held() { /usr/bin/grep -q '^orchestration: awaiting-merge' "$MALFORMED_PLAN" 2>/dev/null; }
+wait_for 90 malformed_held || fail "missing verified SHA did not hold for manual verification"
+assert_contains "${MALFORMED_PLAN%.md}.events.log" 'merge outcome ambiguous — verify before resuming'
+if /usr/bin/grep '^PUT ' "$SANDBOX/state/gh.log" >/dev/null; then fail "missing SHA output logged or sent a merge"; fi
 
 echo ok

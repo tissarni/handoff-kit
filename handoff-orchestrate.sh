@@ -279,7 +279,7 @@ out = {
   'PLAN_ORCH': scalar('orchestration'), 'PLAN_PHASE_IDX': str(phase_idx), 'PLAN_PHASE_COUNT': str(len(phases)),
   'PLAN_PHASE_NAME': phase.get('name') if isinstance(phase.get('name'), str) else f'phase {phase_s or 1}',
   'PLAN_PHASE_BRANCH': phase.get('branch') if isinstance(phase.get('branch'), str) else '',
-  'PLAN_BACKEND': scalar('backend'), 'PLAN_MODEL': scalar('model'),
+  'PLAN_BACKEND': scalar('backend'), 'PLAN_MODEL': scalar('model'), 'PLAN_REVISION': scalar('revision'),
   'PLAN_BRANCH': scalar('branch'), 'PLAN_NOTIFY': scalar('notify'), 'PLAN_BASE': scalar('base'),
   'PLAN_PROJECT': scalar('project'), 'PLAN_SETUP': scalar('setup'),
   'B_REVIEW': bget('review'), 'B_REVISE': bget('revise'), 'B_RUN': bget('run'),
@@ -313,6 +313,7 @@ case "$BACKEND" in claude|hermes|devin) ;; *) die "bad backend: $BACKEND (claude
 [ -n "$MODEL_ARG" ] || MODEL_ARG="$PLAN_MODEL"
 MODEL_FLAGS=(); [ -n "$MODEL_ARG" ] && MODEL_FLAGS=(--model "$MODEL_ARG")
 WANT_BRANCH="${PLAN_PHASE_BRANCH:-$PLAN_BRANCH}"
+MERGE_HELPER="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-merge.py"
 
 # The phase's repo: every brief of a phase works in one repo (one branch per plan).
 REPO=""
@@ -386,7 +387,7 @@ except BaseException:
 PY
 }
 github_repo_slug() {
-  git -C "$REPO" remote get-url origin 2>/dev/null | python3 -c 'import re,sys,urllib.parse
+  git -C "$REPO" config --get remote.origin.url 2>/dev/null | python3 -c 'import re,sys,urllib.parse
 u=sys.stdin.read().strip(); p=urllib.parse.urlsplit(u)
 if p.hostname and p.hostname.lower() == "github.com": path=p.path.strip("/")
 else:
@@ -397,6 +398,50 @@ if path.endswith(".git"): path=path[:-4]
 parts=path.split("/")
 if len(parts) != 2 or not all(re.fullmatch(r"[A-Za-z0-9_-]+", x) for x in parts): sys.exit(1)
 print("/".join(parts))'
+}
+disclosure_forge() {
+  if github_repo_slug >/dev/null 2>&1; then echo github
+  elif git -C "$REPO" config --get remote.origin.url 2>/dev/null | /usr/bin/grep -qi 'gitlab'; then echo gitlab
+  else echo other; fi
+}
+merge_disclosure() {  # read-only disclosure; a failure cannot block an otherwise valid start
+  local forge details configured risk reason override effective consequence task line helper
+  forge="$(disclosure_forge)"; task="$(readlink -f "$PLAN")"
+  helper="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-merge.py"
+  details="$(python3 - "$HOME/.config/handoff/project-policy.json" "$REPO" "$task" "$PLAN_REVISION" <<'PY'
+import json, pathlib, sys
+path, repo, task, revision = sys.argv[1:]
+try: data=json.loads(pathlib.Path(path).read_text(encoding='utf-8'))
+except (OSError, ValueError): data={}
+entry=data.get('repositories', {}).get(repo, {}) if isinstance(data, dict) else {}
+enabled=entry.get('enabled') if isinstance(entry, dict) else None
+policy='auto' if enabled is True else ('manual' if enabled is False else 'unconfigured')
+assessments=entry.get('assessments', []) if isinstance(entry, dict) else []
+a=next((x for x in assessments if isinstance(x, dict) and x.get('task')==task and x.get('revision')==revision), None) if revision else None
+risk=a.get('risk','none') if a else 'none'
+reason=a.get('reason','none') if a else 'none'
+overrides=entry.get('overrides', []) if isinstance(entry, dict) else []
+approved=bool(a and {'task':task,'revision':revision,'risk':risk} in overrides)
+print('|'.join((policy, risk, reason.replace('|','/'), 'yes' if approved else 'no')))
+PY
+  )" || details='unconfigured|none|none|no'
+  IFS='|' read -r configured risk reason override <<<"$details"
+  if [ -z "$PLAN_REVISION" ]; then effective='manual — no plan revision'
+  else
+    effective="$(python3 "$helper" effective --repo "$REPO" --task "$task" --revision "$PLAN_REVISION" 2>/dev/null || true)"
+    [ -n "$effective" ] || effective='manual — policy decision unavailable'
+  fi
+  if [ "$forge" != github ]; then consequence='manual: unchanged behaviour'
+  elif [ "$effective" = auto ]; then consequence="auto: on whole-feature final-review PASS the kit squash-merges into $BASE_BRANCH"
+  else
+    consequence="manual: the plan ends at its PR; this repository's sequence waits for your merge"
+    if [ "$effective" = 'manual — no risk assessment' ]; then
+      consequence="$consequence; assess with handoff-policy assess --repo $REPO --task $task --revision $PLAN_REVISION --risk ordinary --reason <reason>"
+    fi
+  fi
+  line="MERGE POLICY repository-policy=$configured forge=$forge risk=$risk reason=$reason override=$override effective=$effective consequence=$consequence"
+  log_event "$line"
+  printf '%s\n' "$line"
 }
 resume_awaiting_merge() {
   local slug reviewed out rc kind first second merge_helper
@@ -1585,6 +1630,7 @@ begin() {  # $1 = START|RESUME
   # stage scan, HANDOFF_ORCH_ALLOW_CONCURRENT does not skip it.
   local reason clf
   reason="$(kit_check)" || die2 "$reason"
+  if [ "$1" = START ]; then merge_disclosure || true; fi
   # Lock the checkout before anything moves it: a refusal here leaves the branch, the
   # baseline and the plan untouched.
   clf="$(checkout_lock_path)" || die2 "preflight:repo — not a git checkout: $REPO"
@@ -1593,6 +1639,18 @@ begin() {  # $1 = START|RESUME
     reason="$(stage_scan)" || die2 "$reason"
   fi
   readlink -f "$PLAN" >"$clf" 2>/dev/null || die2 "preflight:checkout — could not write $clf"
+  if [ "$1" = START ]; then
+    git -C "$REPO" fetch -q origin 2>/dev/null || true
+    if [ "$BASE_BRANCH" = dev ] && [ "$(disclosure_forge)" = github ] \
+       && [ "$(python3 "$MERGE_HELPER" policy-get --repo "$REPO" 2>/dev/null || true)" = auto ] \
+       && ! git -C "$REPO" rev-parse --verify -q origin/dev >/dev/null 2>&1; then
+      slug="$(github_repo_slug)" || die2 "preflight:dev-bootstrap — GitHub repository identity unavailable"
+      out="$(python3 "$MERGE_HELPER" dev-bootstrap --repository "$slug" 2>&1)" || die2 "preflight:dev-bootstrap — ${out##*$'\n'}"
+      git -C "$REPO" fetch -q origin 2>/dev/null || die2 "preflight:dev-bootstrap — created dev but could not fetch origin"
+      git -C "$REPO" rev-parse --verify -q origin/dev >/dev/null 2>&1 \
+        || die2 "preflight:dev-bootstrap — dev bootstrap succeeded but origin/dev is still missing"
+    fi
+  fi
   ensure_branch
   record_baseline
   reason="$(notify_check)" || { rm -f "$BASELINE"; die2 "$reason"; }

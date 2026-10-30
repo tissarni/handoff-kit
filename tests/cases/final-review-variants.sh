@@ -14,26 +14,6 @@ CALLS="$SANDBOX/state/calls.log"
 mkdir -p "$SANDBOX/home/.claude" "$SANDBOX/home/.hermes/profiles/final-review"
 printf '%s\n' '{"enabledPlugins":{"test-plugin@market":true}}' >"$SANDBOX/home/.claude/settings.json"
 
-# The old launcher wrote the plugin-disable report after the JSON into --settings.
-BASELINE="$SANDBOX/baseline"
-mkdir -p "$BASELINE"
-git -C "$REPO_ROOT" show b95cba87ec6a64af0fe0b538d89f9e3ae74beaa9:handoff-launch.sh >"$BASELINE/handoff-launch.sh"
-cp "$REPO_ROOT/handoff-final-review.py" "$BASELINE/handoff-final-review.py"
-cp -R "$REPO_ROOT/guards" "$BASELINE/guards"
-printf 'BASELINE OUTPUT: '
-_sbx_env
-SBX_ENV+=("HANDOFF_SCRIPTS_DIR=$BASELINE")
-BASE_OUT="$(env -i "${SBX_ENV[@]}" HOME="$SANDBOX/home" PATH="$SANDBOX/bin:/usr/local/bin:/usr/bin:/bin" bash "$BASELINE/handoff-launch.sh" final-review "$BRIEF" --head "$HEAD_SHA" --base "$BASE_SHA" --backend claude 2>&1)"; BASE_RC=$?
-printf 'rc=%s\n%s\n' "$BASE_RC" "$BASE_OUT"
-python3 - "$CALLS" <<'PY' || fail "starting scripts did not record invalid plugin-on settings JSON (rc=$BASE_RC): $BASE_OUT"
-import json, sys
-rows=[json.loads(line) for line in open(sys.argv[1], encoding='utf-8')]
-r=[x for x in rows if x.get('stage') == 'final-review'][-1]
-assert r.get('settings') is None, r.get('settings')
-PY
- : >"$CALLS"
-rm -f "$EVIDENCE"
-
 OUT="$(launch final-review "$BRIEF" --head "$HEAD_SHA" --base "$BASE_SHA" --backend claude 2>&1)"; RC=$?
 [ "$RC" -eq 0 ] || fail "candidate final review failed ($RC): $OUT"
 printf 'CANDIDATE OUTPUT: rc=%s\n%s\n' "$RC" "$OUT"
@@ -94,18 +74,20 @@ assert a[a.index('--respect-workspace-trust')+1] == 'false', a
 PY
 
 # Each malformed or stale review response is rejected with a durable non-empty reason.
-for variant in no-block two-block wrong-head wrong-base blockers move-head; do
+for variant in no-block two-block wrong-head wrong-base blockers fail-ordinary move-head; do
   rm -f "$EVIDENCE"
   OUT="$(FAKE_CLAUDE="final-review=$variant" launch final-review "$BRIEF" --head "$HEAD_SHA" --base "$BASE_SHA" --backend claude 2>&1)"; RC=$?
   [ "$RC" -ne 0 ] || fail "$variant unexpectedly passed: $OUT"
   printf '%s\n' "$OUT" | /usr/bin/grep -qF 'FINAL REVIEW FAIL' || fail "$variant omitted FAIL verdict: $OUT"
+
   ! printf '%s\n' "$OUT" | /usr/bin/grep -qF 'FINAL REVIEW PASS' || fail "$variant printed PASS: $OUT"
-  python3 - "$EVIDENCE" <<'PY' || fail "$variant did not persist a non-empty FAIL reason"
+  python3 - "$EVIDENCE" <<'PY'
 import json, sys
 r=json.load(open(sys.argv[1], encoding='utf-8'))
 assert r.get('verdict') == 'FAIL', r
 assert isinstance(r.get('reason'), str) and r['reason'].strip(), r
 PY
+  [ "$?" -eq 0 ] || fail "$variant did not persist a non-empty FAIL reason: $(cat "$EVIDENCE" 2>/dev/null)"
 done
 
 echo ok

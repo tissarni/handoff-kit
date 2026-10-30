@@ -1502,9 +1502,10 @@ phase_done() {
       set_final_reviewed_head "$review_head"
       if [ "$BASE_BRANCH" != dev ]; then
         reason="auto-merge only targets dev; base is $BASE_BRANCH"
+        # Event and status first: the plan state is the commit point readers poll.
         log_event "AWAITING MERGE ${review_head:0:7} — $reason"
-        set_plan_orch awaiting-merge; set_phase_status done; release_lock
         write_status "AWAITING MERGE · final review PASS ${review_head:0:7} · merge into $BASE_BRANCH not attempted · $(ts "$(now_s)")" "$(printf 'PR: %s' "$(pr_url)")"
+        set_plan_orch awaiting-merge; set_phase_status done; release_lock
         notify "AWAITING MERGE · final review PASS ${review_head:0:7} · $reason"
         echo "awaiting merge into $BASE_BRANCH: $reason"
         return 0
@@ -1568,10 +1569,10 @@ auto_finalize() {  # $1 = merge helper, $2 = reviewed head
     1) reason="$(printf '%s\n' "$out" | tail -1 | sed 's/^handoff-merge: //')"; reason="auto-merge refused — ${reason:-reason unavailable}" ;;
     *) reason="merge outcome ambiguous — verify before resuming" ;;
   esac
-  # Record the reason before the state that points readers to it.
+  # Event and status first: the plan state is the commit point readers poll.
   log_event "AWAITING MERGE ${reviewed:0:7} — $reason"
-  set_plan_orch awaiting-merge; set_phase_status done; release_lock
   write_status "AWAITING MERGE · final review PASS ${reviewed:0:7} · merge into $BASE_BRANCH not yet verified · $(ts "$(now_s)")" "$(printf 'PR: %s' "$(pr_url)")"
+  set_plan_orch awaiting-merge; set_phase_status done; release_lock
   notify "AWAITING MERGE · final review PASS ${reviewed:0:7} · $reason"
   echo "awaiting merge into $BASE_BRANCH: $reason"
 }

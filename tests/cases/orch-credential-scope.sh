@@ -102,10 +102,15 @@ OUT="$(env -i "${SBX_ENV[@]}" bash "$SANDBOX/kit/handoff-orchestrate.sh" start "
 [ "$RC" -eq 0 ] || fail "supervisor-owned plan did not start ($RC): $OUT"
 awaiting() { /usr/bin/grep -q '^orchestration: awaiting-merge' "$PLAN" 2>/dev/null; }
 wait_for 120 awaiting || fail "plan did not reach finalization state"
-python3 - "$SANDBOX/state/setsid.argv" "$SANDBOX/state/env.argv" "${VALUES[*]}" <<'PY' || fail "a launch argv exposed a credential sentinel"
-import sys
-raw=''.join(open(p,'rb').read().decode('utf-8','replace') for p in sys.argv[1:3])
-assert not any(x in raw for x in sys.argv[3].split()), raw
+python3 - "$SANDBOX/state/setsid.argv" "$SANDBOX/state/env.argv" "${VALUES[*]}" <<'PY' 2>"$SANDBOX/state/argv-check.err" || fail "a launch argv exposed a credential sentinel: $(tail -1 "$SANDBOX/state/argv-check.err")"
+import os,sys
+missing=[p for p in sys.argv[1:3] if not os.path.exists(p)]
+assert not missing, f"argv spy files missing: {missing}"
+for p in sys.argv[1:3]:
+    raw=open(p,'rb').read().decode('utf-8','replace').replace(chr(0),' ')
+    for x in sys.argv[3].split():
+        i=raw.find(x)
+        assert i < 0, f"{os.path.basename(p)}: {x} in ...{raw[max(0,i-200):i+60]!r}"
 PY
 [ -f "$SANDBOX/state/gh-token.log" ] || fail "finalize did not invoke fake gh"
 /usr/bin/grep -q '^sentinel-gh$' "$SANDBOX/state/gh-token.log" || fail "finalize did not retain GH_TOKEN"

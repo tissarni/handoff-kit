@@ -97,38 +97,108 @@ and `resume` arm each plan's timer. It exits 1 on a refusal and 2 on a bad flag.
 
 ## Repository merge policy
 
-The shipped installation default is false. An installation default is only a proposal for
-new project initialization; changing it never changes saved repository choices. An
-unconfigured repository stays manual. The companion project initializer can call
-`handoff-policy default-get`, ask the user to confirm that proposed value, then persist the
-answer with `handoff-policy policy-init --repo <git-repository> --choice true|false`.
-Operators can inspect or change an exact repository choice with `policy-get --repo <path>`
-and `policy-set --repo <path> true|false`.
+Automatic merge is supported for GitHub only. A feature is one plan, one feature branch and
+one pull request. Automatic merges target `dev` only; `finalize` refuses any other base, and
+an auto-policy plan based on another branch ends in `awaiting-merge` for a human merge.
+Nothing automatically merges `dev` into `main`. GitLab and repositories with manual or
+unconfigured policy keep their previous completion behavior.
 
-Before a feature starts, a caller can display `effective --repo <path> --task <id>
---revision <brief-revision> --risk <ordinary|breaking-api|destructive-migration|
-auth-permissions-secrets|deployment-infrastructure|merge-policy|uncertain>`. The result is
-`auto` or `manual`. Risky or uncertain work defaults to manual. An operator may record an
-explicit feature-scoped exception on an opted-in repository with `override --repo <path>
---task <id> --revision <brief-revision> --risk <risk> --approve`; it applies only to that
-task, revision and risk, and must be recorded before launch. Agent-authored brief text
-cannot create this approval. Turning a repository policy off prevents any task override
-from enabling it. These local files are convenience policy, not an isolation boundary
-against another process running as the same user.
+### Configuration and operator commands
 
-`HANDOFF_AUTO_MERGE` accepts only `true` or `false`; invalid settings fail closed. The policy
-helper also exposes `dev-bootstrap --repository owner/name` and a narrow `finalize` command.
-The bootstrap reads the repository and main ref, creates missing dev from that SHA, and
-preserves an existing dev. Finalization requires `GH_TOKEN`, exact GitHub host, a local
-`--policy-repo`, explicit task identity/revision/risk, and a non-held policy. It requires an
-open, non-draft, mergeable PR to dev with the exact feature head and expected base revision, successful commit status and completed
-successful check runs, then requests one squash merge with the expected head SHA, reads the
-PR back, and deletes the remote branch only if its ref still equals that SHA. A lost merge
-response is reconciled by read-back and is never retried. These operations are deterministic
-control-plane helpers, not a final reviewer: they do not inspect brief acceptance evidence,
-blocking reviews, required-check configuration, or orchestrator feature boundaries, and
-must not be wired as an unattended merge authorization until those gates are implemented.
-The local policy files remain same-user convenience state, not a hostile-process boundary.
+The shipped installation default is false. On an interactive first install, `install.sh`
+asks whether to enable it; unattended first installs choose false. Pass
+`--auto-merge true|false` to set it explicitly. A rerun keeps the saved choice unless that
+flag is supplied. The setting is only a proposed value for project initialization: changing
+it does not change any repository's saved choice, and an unconfigured repository is manual.
+A project initializer can call `handoff-policy default-get`, ask the user to confirm the
+proposed value, then persist that choice with
+`handoff-policy policy-init --repo <git-repository> --choice true|false`.
+
+The `handoff-policy` interface (the installed name for `handoff-merge.py`) is an operator
+interface. Paths passed to `--repo` are local Git repositories; forge commands take
+`owner/name` where shown. Commands and their normal stdout are:
+
+- `handoff-policy default-get` — prints `true` or `false`.
+- `handoff-policy default-set true|false` — saves and prints the installation default.
+- `handoff-policy policy-get --repo <path>` — prints `auto` or `manual`; a repository with
+  no saved choice is `manual`.
+- `handoff-policy policy-set --repo <path> true|false` — saves and prints `auto` or `manual`.
+- `handoff-policy policy-init --repo <path> --choice true|false` — persists the project
+  initializer's confirmed choice and prints `auto` or `manual`.
+- `handoff-policy effective --repo <path> --task <id> --revision <revision>
+  [--risk <category>]` — prints `auto` or `manual — <reason>`. `--risk` is accepted for
+  compatibility/display; the recorded assessment determines the decision.
+- `handoff-policy assess --repo <path> --task <id> --revision <revision> --risk
+  <category> --reason <text>` — records the operator's risk assessment and prints
+  `assessed`.
+- `handoff-policy override --repo <path> --task <id> --revision <revision> --risk
+  <category> --approve` — records a task/revision/risk-scoped approval and prints
+  `approved`; it cannot elevate a manual repository.
+- `handoff-policy hold --repo <path> [--task <id>]` and
+  `handoff-policy release --repo <path> [--task <id>]` — set or clear a repository-wide
+  hold, or a task hold, and print `held` or `released`.
+- `handoff-policy merge-state --repository <owner/name> --branch <branch> --base <branch>`
+  — read-only matching-PR state (`merged`, `open` or `absent`, with identifiers).
+- `handoff-policy dev-bootstrap --repository <owner/name>` — creates a missing GitHub `dev`
+  from verified `main`, preserving an existing `dev`.
+- `handoff-policy finalize --repository <owner/name> --plan <plan> --branch <branch>
+  [--base dev]` — checks readiness and merges one reviewed feature head. Exit 0 means
+  verified completion; exit 1 means refusal; exit 3 means an ambiguous merge outcome that
+  needs human verification; exit 4 means the merge was verified but branch cleanup failed.
+
+### Risk and final review
+
+Assess risk before launching a feature. Categories requiring manual handling by default are
+`breaking-api`, `destructive-migration`, `auth-permissions-secrets`,
+`deployment-infrastructure`, `merge-policy`, and `uncertain`; unknown or unassessed risk is
+manual. An operator can record an explicit exception with `override` on an opted-in
+repository, but it applies only to that task, revision and assessed risk. Brief or PR prose
+cannot create an assessment or approval. Turning repository policy off prevents an override
+from enabling it. A hold can block all tasks or one task. The final reviewer can identify
+late risk: a non-ordinary review risk that does not match the assessment is refused and
+returns the task to manual handling.
+
+A final code review runs only at a whole-feature boundary: use `handoff-launch loop
+<brief> --feature-complete` for a standalone feature, or it runs after the last phase of an
+orchestrated plan under auto policy on GitHub. It reviews the exact base-to-head changes
+against the briefs' acceptance criteria, design and repository `AGENTS.md` checks; it
+verifies relevant checks and does not treat PR prose, prior reports or CI alone as proof.
+The read-only reviewer never merges. It writes `<feature>.final-review.json` evidence,
+bound to the feature, repository, exact head and base, verdict, blockers and risk. Reuse
+requires matching feature/repository/head/base and a valid risk; changed inputs require a
+new review. The deterministic `finalize` helper consumes that evidence and performs the
+merge checks.
+
+The Hermes `final-review` profile is created by `install.sh --hermes-profiles` without a
+`SOUL.md`; its config inherits the model block. If the profile is absent, the launcher fails
+closed. Claude final review uses the review stage settings and tool denials. Devin final
+review uses the review stage's edit-denying config. Local policies are convenience files,
+not a sandbox against other processes running as the same user; there is no cryptographic
+isolation.
+
+### Pull requests, recovery and CI
+
+The PR body must have non-empty `## Feature`, `## Acceptance`, `## Final review`, `## CI` and
+`## Limitations` sections. The `Final review` section must contain the reviewed head SHA.
+`finalize` enforces those sections and the SHA, but PR prose never grants authority.
+
+A successful plan reaches `done`. If a non-`dev` base or an operator refusal needs human
+handling, the plan becomes `awaiting-merge` and keeps its checkout; `resume` verifies a
+matching human merge against the recorded reviewed head before completing. A final-review
+FAIL makes the plan `broken`. An ambiguous merge result (exit 3) is not retried
+automatically: verify the PR and target branch first, then resume only when its state is
+known. Exit 4 means merge succeeded but branch cleanup failed; the plan completes with a
+warning and the leftover branch can be cleaned up separately. To retry a refused finalize
+by hand after correcting the cause, use the `finalize` command above; it requires the plan's
+valid final-review evidence and current readiness checks. Use `hold`/`release` to pause or
+resume eligibility at repository or task scope.
+
+This kit's CI workflow runs the test suite on every push and pull request; it has no
+deployment job. Merging into `dev` may trigger workflows configured by the repository—check
+those triggers before enabling auto-merge. The kit does not change repository protections or
+workflows. Finalize requires `GH_TOKEN` and `GH_HOST` in the orchestrator environment, with
+the GitHub host set to `github.com`. The companion project-initializer integration is
+outside this repository.
 
 ## Hermes profiles
 

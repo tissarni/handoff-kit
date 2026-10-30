@@ -34,12 +34,25 @@ PY
 cat >"$SANDBOX/bin/backend-capture" <<'PY'
 #!/usr/bin/env python3
 import json, os, re, sys
+if sys.argv[1:3] == ['auth', 'status']:
+    print('Logged in\nTier: Pro')
+    sys.exit(0)
+if sys.argv[1:3] == ['models', 'list']:
+    print('{"families": []}')
+    sys.exit(0)
 with open(os.environ['FAKE_STATE_DIR'] + '/' + os.environ['BACKEND_LOG'], 'w', encoding='utf-8') as f:
     json.dump(sys.argv[1:], f)
+args=sys.argv[1:]
+if '--config' in args:
+    with open(args[args.index('--config')+1], encoding='utf-8') as source:
+        with open(os.environ['FAKE_STATE_DIR'] + '/' + os.environ['BACKEND_LOG'] + '.config', 'w', encoding='utf-8') as target:
+            target.write(source.read())
 text=' '.join(sys.argv[1:])
 h=re.search(r'head: ([0-9a-f]{40})', text)
 b=re.search(r'base: ([0-9a-f]{40})', text)
-if not h or not b: sys.exit(4)
+if not h or not b:
+    print('=== HANDOFF REVIEW ===\nverdict: PASS\n=== END HANDOFF REVIEW ===')
+    sys.exit(0)
 print('''FINAL REVIEW
 verdict: PASS
 head: %s
@@ -63,14 +76,30 @@ assert a[a.index('--in')+1] == sys.argv[2], a
 PY
 
 _sbx_env
+SBX_ENV+=("HERMES_BIN=$SANDBOX/bin/hermes" "DEVIN_BIN=$SANDBOX/bin/devin" "BACKEND_LOG=devin-review.argv")
+env -i "${SBX_ENV[@]}" bash "$SANDBOX/kit/handoff-launch.sh" review "$BRIEF" --backend devin >/dev/null 2>&1 || fail "Devin normal review invocation failed"
+python3 - "$SANDBOX/state/devin-review.argv" "$SANDBOX/state/devin-review.argv.config" <<'PY' || fail "Devin normal review config assertion failed"
+import json, sys
+a=json.load(open(sys.argv[1], encoding='utf-8'))
+assert '--config' in a, a
+config=json.load(open(sys.argv[2], encoding='utf-8'))
+assert config.get('permissions', {}).get('deny') == ['edit'], config
+PY
+
+_sbx_env
 SBX_ENV+=("HERMES_BIN=$SANDBOX/bin/hermes" "DEVIN_BIN=$SANDBOX/bin/devin" "BACKEND_LOG=devin.argv")
 rm -f "$EVIDENCE"
 env -i "${SBX_ENV[@]}" bash "$SANDBOX/kit/handoff-launch.sh" final-review "$BRIEF" --head "$HEAD_SHA" --base "$BASE_SHA" --backend devin >/dev/null 2>&1 || fail "Devin final-review invocation failed"
-python3 - "$SANDBOX/state/devin.argv" <<'PY' || fail "Devin final-review argv assertion failed"
+python3 - "$SANDBOX/state/devin.argv" "$SANDBOX/state/devin.argv.config" "$SANDBOX/state/devin-review.argv.config" <<'PY' || fail "Devin final-review argv/config assertion failed"
 import json, sys
 a=json.load(open(sys.argv[1], encoding='utf-8'))
 assert a[a.index('--permission-mode')+1] == 'dangerous', a
 assert a[a.index('--respect-workspace-trust')+1] == 'false', a
+assert '--config' in a, a
+final_config=json.load(open(sys.argv[2], encoding='utf-8'))
+review_config=json.load(open(sys.argv[3], encoding='utf-8'))
+assert final_config == review_config, (final_config, review_config)
+assert final_config.get('permissions', {}).get('deny') == ['edit'], final_config
 PY
 
 # Each malformed or stale review response is rejected with a durable non-empty reason.

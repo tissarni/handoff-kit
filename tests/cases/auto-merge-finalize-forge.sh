@@ -73,7 +73,7 @@ def exercise(label, cfg, expect=0, reason=None, graphql=None):
  lines=log.read_text().splitlines()
  if p.returncode != expect: raise AssertionError(f'{label}: exit {p.returncode}, wanted {expect}: {p.stderr}; calls={lines}')
  if reason and reason not in p.stderr: raise AssertionError(f'{label}: missing refusal {reason!r}: {p.stderr}')
- if expect and (not p.stderr.startswith('handoff-merge: ') or any(x.split(' ',1)[0] in ('POST','PUT','PATCH','DELETE') for x in lines)): raise AssertionError(f'{label}: uncontrolled refusal or write: {p.stderr} {lines}')
+ if expect and (not p.stderr.startswith('handoff-merge: ') or any(x.split(' ',1)[0] in ('PUT','PATCH','DELETE') or (x.startswith('POST ') and x != 'POST graphql') for x in lines) or ('POST graphql' in lines and graphql is False)): raise AssertionError(f'{label}: uncontrolled refusal or write: {p.stderr} {lines}')
  if graphql is not None and ('POST graphql' in lines) != graphql: raise AssertionError(f'{label}: GraphQL calls unexpected: {lines}')
  if expect == 0 and not any(x.startswith('PUT ') for x in lines): raise AssertionError(f'{label}: expected merge PUT: {lines}')
  return p, lines
@@ -82,5 +82,20 @@ p,lines=exercise('non-draft positive',{'draft':False})
 if 'POST graphql' in lines: raise AssertionError(f'non-draft PR used GraphQL: {lines}')
 for label,cfg in [('403 fallback',{'draft':False,'protection_http':403,'protection':{},'runs':[{'name':'info','status':'completed','conclusion':'neutral'},{'name':'skip','status':'completed','conclusion':'skipped'},{'name':'green','status':'completed','conclusion':'success'}]}),('empty protection fallback',{'draft':False,'protection':{'contexts':[],'checks':[]},'runs':[{'name':'info','status':'completed','conclusion':'neutral'},{'name':'skip','status':'completed','conclusion':'skipped'},{'name':'green','status':'completed','conclusion':'success'}]})]:
  exercise(label,cfg)
-print('finalize forge: draft, non-draft, and readiness fallback positives passed')
+for label,cfg,reason,gql in [
+ ('required context missing',{'draft':False,'runs':[]},'required check missing: ci',False),
+ ('required check failed',{'draft':False,'runs':[{'name':'ci','status':'completed','conclusion':'failure'}]},'required check unsuccessful: ci',False),
+ ('check-run pending',{'draft':False,'runs':[{'name':'ci','status':'in_progress','conclusion':None}]},'required check unsuccessful: ci',False),
+ ('page two failure',{'draft':False,'page2_failure':True},'required check unsuccessful: ci',False),
+ ('legacy status failure',{'draft':False,'runs':[],'statuses':[{'context':'ci','state':'failure'}]},'required check unsuccessful: ci',False),
+ ('404 empty pending fallback',{'draft':False,'protection_http':404,'runs':[],'combined_state':'pending','statuses':[]},'required checks are absent or unsuccessful',False),
+ ('empty requirements pending fallback',{'draft':False,'protection':{'contexts':[],'checks':[]},'runs':[],'combined_state':'pending','statuses':[]},'required checks are absent or unsuccessful',False),
+ ('malformed protection',{'draft':False,'protection':{'contexts':'ci','checks':[]}},'malformed required status checks response',False),
+ ('missing body section',{'draft':False,'body':'## Feature\nfeature\n## Acceptance\naccept\n## Final review\n'+head+'\n## CI\nci\n'},'incomplete PR body: Limitations',False),
+ ('final review omits head',{'draft':False,'body':'## Feature\nfeature\n## Acceptance\naccept\n## Final review\nother\n## CI\nci\n## Limitations\nnone'},'incomplete PR body: Final review',False),
+ ('graphql mutation error',{'draft':True,'graphql_error':True},'GitHub POST graphql failed',True),
+ ('changed head after ready',{'draft':True,'post_ready_head':True},'refused after marking ready',True),
+]:
+ exercise(label,cfg,expect=1,reason=reason,graphql=gql)
+print('finalize forge: draft, non-draft, readiness fallbacks, and refusal scenarios passed')
 PY

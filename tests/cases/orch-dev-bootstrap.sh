@@ -50,6 +50,8 @@ _sbx_env
 OUT="$(env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com bash "$SANDBOX/kit/handoff-orchestrate.sh" start "$plan" --backend claude --publication-owner supervisor 2>&1)"; RC=$?
 [ "$RC" -eq 0 ] || fail "START failed: $OUT"
 assert_contains "$SANDBOX/state/forge.log" 'repos/acme/widget/git/refs'
+assert_eq "$(/usr/bin/grep -c '^POST repos/acme/widget/git/refs$' "$SANDBOX/state/forge.log")" 1 "bootstrap POST count"
+printf '%s\n' "$OUT" | /usr/bin/grep -q 'driver launched:' || fail "plan did not start after bootstrap: $OUT"
 git -C "$repo" show-ref --verify --quiet refs/remotes/origin/dev || fail "origin/dev was not fetched"
 assert_eq "$(git -C "$repo" rev-parse origin/dev)" "$(git -C "$repo" rev-parse origin/main)" "dev did not start at main"
 orch stop "$plan" >/dev/null 2>&1 || true
@@ -86,6 +88,8 @@ OUT="$(env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com bash "$SANDBOX/ki
 printf '%s\n' "$OUT" | /usr/bin/grep -q 'origin/dev.*missing' || fail "manual missing-dev refusal unclear: $OUT"
 if /usr/bin/grep -q 'POST repos/acme/widget/git/refs' "$SANDBOX/state/forge.log"; then fail "manual policy called dev-bootstrap"; fi
 git -C "$repo" show-ref --verify --quiet refs/heads/feat/test && fail "manual missing-dev cut a feature branch"
+assert_no_file "${manual_plan%.md}.driver.log"
+assert_no_file "${manual_plan%.md}.lock"
 
 # Automatic bootstrap refuses a missing main ref and a denied create without
 # falling back to main or cutting the requested feature branch.
@@ -104,6 +108,8 @@ OUT="$(env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com bash "$SANDBOX/ki
 [ "$RC" -ne 0 ] || fail "missing-main bootstrap unexpectedly passed: $OUT"
 printf '%s\n' "$OUT" | /usr/bin/grep -q 'preflight:dev-bootstrap' || fail "missing-main refusal unclear: $OUT"
 git -C "$repo" show-ref --verify --quiet refs/heads/feat/bootstrap-failure && fail "missing-main fallback cut a feature branch"
+assert_no_file "${auto_plan%.md}.driver.log"
+assert_no_file "${auto_plan%.md}.lock"
 python3 - "$SANDBOX/state/bootstrap.json" "$main_sha" <<'PY'
 import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d['main']=d['main'] or sys.argv[2]; d['dev']=None; d['deny_post']=True; open(p,'w').write(json.dumps(d))
@@ -112,4 +118,6 @@ OUT="$(env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com bash "$SANDBOX/ki
 [ "$RC" -ne 0 ] || fail "denied bootstrap unexpectedly passed: $OUT"
 printf '%s\n' "$OUT" | /usr/bin/grep -q 'preflight:dev-bootstrap' || fail "denied-bootstrap refusal unclear: $OUT"
 git -C "$repo" show-ref --verify --quiet refs/heads/feat/bootstrap-failure && fail "denied bootstrap cut a feature branch"
+assert_no_file "${auto_plan%.md}.driver.log"
+assert_no_file "${auto_plan%.md}.lock"
 echo ok

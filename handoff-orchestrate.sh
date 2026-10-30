@@ -1271,7 +1271,7 @@ launch_driver() {
   mkdir -p "$driver_dir"
   cp "$KIT/handoff-launch.sh" "$driver_dir/handoff-launch.sh"
   cp "$KIT/handoff-orchestrate.sh" "$driver_dir/handoff-orchestrate.sh"
-  in_new_session env VAULT="$VAULT" HANDOFF_KIT="$KIT" HANDOFF_DEFAULTS="$HANDOFF_DEFAULTS" HANDOFF_PROJECTS="$HANDOFF_PROJECTS" HANDOFF_LAUNCHER="$driver_dir/handoff-launch.sh" GH_TOKEN="${GH_TOKEN:-}" GH_HOST="${GH_HOST:-}" \
+  in_new_session env VAULT="$VAULT" HANDOFF_KIT="$KIT" HANDOFF_DEFAULTS="$HANDOFF_DEFAULTS" HANDOFF_PROJECTS="$HANDOFF_PROJECTS" HANDOFF_LAUNCHER="$driver_dir/handoff-launch.sh" \
     bash "$driver_dir/handoff-orchestrate.sh" __driver "$PLAN_ARG" --backend "$BACKEND" "${MODEL_FLAGS[@]}" "${PUBLICATION_OWNER_FLAGS[@]}" \
     >"$DRIVER_LOG" 2>&1 </dev/null &
   local dpid=$!
@@ -1437,7 +1437,11 @@ phase_done() {
         review_out=""
         review_rc=0
         review_launcher="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-launch.sh"
-        review_out="$(bash "$review_launcher" final-review "$PLAN" --head "$review_head" --base "$review_base" --backend "$BACKEND" 2>&1)" || review_rc=$?
+        if [ "$PUBLICATION_OWNER" = "supervisor" ]; then
+          review_out="$(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN bash "$review_launcher" final-review "$PLAN" --head "$review_head" --base "$review_base" --backend "$BACKEND" 2>&1)" || review_rc=$?
+        else
+          review_out="$(bash "$review_launcher" final-review "$PLAN" --head "$review_head" --base "$review_base" --backend "$BACKEND" 2>&1)" || review_rc=$?
+        fi
         if [ "$review_rc" -eq 0 ]; then
           log_event "FINAL REVIEW PASS ${review_head:0:7}"
         else

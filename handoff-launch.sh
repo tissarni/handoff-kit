@@ -455,6 +455,9 @@ case "$BACKEND_ARG" in
   claude|hermes|devin) BACKEND="$BACKEND_ARG" ;;
   *)             die "--backend must be claude, hermes or devin, got: $BACKEND_ARG" ;;
 esac
+if [ "$PUBLICATION_OWNER" = "supervisor" ] && { [ "$MODE" = "run" ] || [ "$MODE" = "resume" ]; }; then
+  unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+fi
 if [ "$BACKEND" = "devin" ]; then
   [ -n "$DEVIN_BIN" ] || die "devin not found. Checked PATH, ~/.local/bin, /usr/local/bin and ~/.local/share/devin/cli/_versions/current/bin. Install it (curl -fsSL https://cli.devin.ai/install.sh | bash) or set DEVIN_BIN."
   # Fail before anything costs anything: a headless stage on an unauthenticated CLI
@@ -863,7 +866,11 @@ if [ "$MODE" = "loop" ]; then
   stage() {   # returns the stage's exit code; the caller decides what a failure means
     printf '\n==> loop: %s %s\n' "$1" "$(basename "$BRIEF")" >&2
     local rc=0
-    bash "$0" "$@" "${PASS[@]}" || rc=$?
+    if [ "$PUBLICATION_OWNER" = "supervisor" ]; then
+      env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN bash "$0" "$@" "${PASS[@]}" || rc=$?
+    else
+      bash "$0" "$@" "${PASS[@]}" || rc=$?
+    fi
     return "$rc"
   }
   expect() {   # $1 = state the last stage must have produced
@@ -1196,7 +1203,11 @@ EOF
           fi
           review_out=""
           review_rc=0
-          review_out="$(bash "$KIT/handoff-launch.sh" final-review "$BRIEF" --head "$head_sha" --base "$base_sha" --backend "$BACKEND" 2>&1)" || review_rc=$?
+          if [ "$PUBLICATION_OWNER" = "supervisor" ]; then
+            review_out="$(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN bash "$KIT/handoff-launch.sh" final-review "$BRIEF" --head "$head_sha" --base "$base_sha" --backend "$BACKEND" 2>&1)" || review_rc=$?
+          else
+            review_out="$(bash "$KIT/handoff-launch.sh" final-review "$BRIEF" --head "$head_sha" --base "$base_sha" --backend "$BACKEND" 2>&1)" || review_rc=$?
+          fi
           if [ "$review_rc" -eq 0 ]; then
             printf 'FINAL REVIEW PASS %s\n' "${head_sha:0:7}"
           else

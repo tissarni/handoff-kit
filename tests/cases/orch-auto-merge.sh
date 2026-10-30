@@ -115,8 +115,18 @@ PY
 import json,sys
 state={'head':sys.argv[2],'base':sys.argv[3]}
 if sys.argv[4]=='already': state.update(merged=True,deleted=True)
+elif sys.argv[4]=='failing-check': state['fail_check']=True
+elif sys.argv[4]=='ambiguous': state['put_error']=True
+elif sys.argv[4]=='cleanup-failure': state['delete_error']=True
 open(sys.argv[1],'w').write(json.dumps(state))
 PY
+  if [ "$mode" = failing-check ] || [ "$mode" = ambiguous ] || [ "$mode" = cleanup-failure ]; then
+    python3 - "$SANDBOX/state/forge.json" "$mode" <<'PY' || { echo "FAIL: scenario state was not ready before orchestration started"; return 1; }
+import json,sys
+key={'failing-check':'fail_check','ambiguous':'put_error','cleanup-failure':'delete_error'}[sys.argv[2]]
+assert json.load(open(sys.argv[1])).get(key) is True
+PY
+  fi
   if [ "$mode" = malformed ]; then
     cp "$SANDBOX/kit/handoff-merge.py" "$SANDBOX/kit/handoff-merge-real.py"
     cat >"$SANDBOX/kit/handoff-merge.py" <<'PY'
@@ -137,14 +147,12 @@ PY
   env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com bash "$SANDBOX/kit/handoff-orchestrate.sh" start "$plan" --backend claude --publication-owner supervisor >/dev/null 2>&1
   printf '%s' "$plan"
 }
+event_seen() { /usr/bin/grep -qF -- "$2" "$1" 2>/dev/null; }
 
-FAIL_CHECK_PLAN="$(scenario_plan failing-check)"
-python3 - "$SANDBOX/state/forge.json" <<'PY'
-import json,sys
-p=sys.argv[1]; d=json.load(open(p)); d['fail_check']=True; open(p,'w').write(json.dumps(d))
-PY
+FAIL_CHECK_PLAN="$(scenario_plan failing-check failing-check)" || fail "failing-check scenario state was not ready before orchestration started"
 check_held() { /usr/bin/grep -q '^orchestration: awaiting-merge' "$FAIL_CHECK_PLAN" 2>/dev/null; }
 wait_for 90 check_held || fail "failing required check did not hold for merge"
+wait_for 10 event_seen "${FAIL_CHECK_PLAN%.md}.events.log" 'auto-merge refused' || fail "failing-check event was not recorded"
 assert_contains "${FAIL_CHECK_PLAN%.md}.events.log" 'auto-merge refused'
 if /usr/bin/grep -E '^(POST graphql|PUT |DELETE )' "$SANDBOX/state/gh.log" >/dev/null; then fail "failing required check caused a forge mutation"; fi
 python3 - "$SANDBOX/state/forge.json" <<'PY'
@@ -157,13 +165,10 @@ env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com bash "$SANDBOX/kit/hando
 assert_contains "${FAIL_CHECK_PLAN%.md}.events.log" 'MERGE VERIFIED'
 if /usr/bin/grep -E '^PUT ' "$SANDBOX/state/gh.log" >/dev/null; then fail "resume retried the merge PUT"; fi
 
-AMBIGUOUS_PLAN="$(scenario_plan ambiguous-merge)"
-python3 - "$SANDBOX/state/forge.json" <<'PY'
-import json,sys
-p=sys.argv[1]; d=json.load(open(p)); d['put_error']=True; open(p,'w').write(json.dumps(d))
-PY
+AMBIGUOUS_PLAN="$(scenario_plan ambiguous-merge ambiguous)" || fail "ambiguous-merge scenario state was not ready before orchestration started"
 ambiguous_held() { /usr/bin/grep -q '^orchestration: awaiting-merge' "$AMBIGUOUS_PLAN" 2>/dev/null; }
 wait_for 90 ambiguous_held || fail "ambiguous merge did not hold for verification"
+wait_for 10 event_seen "${AMBIGUOUS_PLAN%.md}.events.log" 'merge outcome ambiguous — verify before resuming' || fail "ambiguous-merge event was not recorded"
 assert_contains "${AMBIGUOUS_PLAN%.md}.events.log" 'merge outcome ambiguous — verify before resuming'
 assert_eq "$(/usr/bin/grep -c '^PUT ' "$SANDBOX/state/gh.log")" 1 "ambiguous merge PUT count"
 _sbx_env
@@ -177,13 +182,10 @@ PY
 _sbx_env
 env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com bash "$SANDBOX/kit/handoff-orchestrate.sh" resume "$AMBIGUOUS_PLAN" --backend claude --publication-owner supervisor >/dev/null 2>&1
 
-CLEANUP_PLAN="$(scenario_plan cleanup-failure)"
-python3 - "$SANDBOX/state/forge.json" <<'PY'
-import json,sys
-p=sys.argv[1]; d=json.load(open(p)); d['delete_error']=True; open(p,'w').write(json.dumps(d))
-PY
+CLEANUP_PLAN="$(scenario_plan cleanup-failure cleanup-failure)" || fail "cleanup-failure scenario state was not ready before orchestration started"
 cleanup_done() { /usr/bin/grep -q '^orchestration: done' "$CLEANUP_PLAN" 2>/dev/null; }
 wait_for 90 cleanup_done || fail "cleanup failure did not complete merged plan"
+wait_for 10 event_seen "${CLEANUP_PLAN%.md}.events.log" 'cleanup failed' || fail "cleanup-failure event was not recorded"
 assert_contains "${CLEANUP_PLAN%.md}.events.log" 'MERGED ccccccc into main — verified'
 assert_contains "${CLEANUP_PLAN%.md}.events.log" 'cleanup failed'
 assert_contains "${CLEANUP_PLAN%.md}.events.log" 'feat/test'

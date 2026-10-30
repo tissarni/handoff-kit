@@ -1487,16 +1487,16 @@ auto_finalize() {  # $1 = merge helper, $2 = reviewed head
           deleted) cleanup_event="branch cleaned" ;;
           already-deleted) cleanup_event="branch cleaned (already deleted)" ;;
           preserved) cleanup_event="branch preserved" ;;
-          failed) reason="$(printf '%s\n' "$out" | /usr/bin/grep '^handoff-merge:' | tail -1 | sed 's/^handoff-merge: //')"; cleanup_event="cleanup failed — ${reason:-reason unavailable}" ;;
+          failed) reason="$(printf '%s\n' "$out" | /usr/bin/grep '^handoff-merge:' | tail -1 | sed 's/^handoff-merge: //; s/^merged, cleanup failed: //')"; cleanup_event="cleanup failed — ${reason:-reason unavailable}" ;;
         esac
         log_event "MERGED ${merge_sha:0:7} into $BASE_BRANCH — verified"
-        log_event "$cleanup_event${cleanup:+ — $WANT_BRANCH}"
+        if [ "$cleanup" = failed ]; then log_event "$cleanup_event; leftover branch $WANT_BRANCH"; else log_event "$cleanup_event"; fi
         set_plan_orch done; set_phase_status done; release_lock
         clf="$(checkout_lock_path 2>/dev/null)" || clf=""
         if [ -n "$clf" ] && [ -f "$clf" ] && [ "$(head -1 "$clf")" = "$(readlink -f "$PLAN")" ]; then rm -f "$clf"; fi
         write_status "DONE · merged into $BASE_BRANCH · $(ts "$(now_s)")" "$(phase_summary)"
         retire_watchdog
-        notify "DONE · merged ${merge_sha:0:7} into $BASE_BRANCH — ${cleanup_event}${cleanup:+ ($WANT_BRANCH)}"
+        if [ "$cleanup" = failed ]; then notify "DONE · merged ${merge_sha:0:7} into $BASE_BRANCH — $cleanup_event; leftover branch $WANT_BRANCH"; else notify "DONE · merged ${merge_sha:0:7} into $BASE_BRANCH — $cleanup_event"; fi
         echo "merged and verified: ${merge_sha:0:7} into $BASE_BRANCH"
         [ "$rc" -eq 0 ] && return 0
         return 0

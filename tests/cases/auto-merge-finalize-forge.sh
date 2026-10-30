@@ -137,5 +137,21 @@ for label,cfg,expect,reason,puts,deletes in [
  ('branch ref GET fails',{'draft':False,'ref_error':True},4,'cleanup failed',1,0),
 ]:
  p,lines=exercise(label,cfg,expect=expect,reason=reason,puts=puts,deletes=deletes)
-print('finalize forge: draft, readiness, merge reconciliation, base verification, and cleanup cases passed')
+p,lines=exercise('report deleted',{'draft':False})
+for required in ('merge-sha: '+'c'*40,'branch-cleanup: deleted'):
+ if required not in p.stdout: raise AssertionError(f'missing reporting line {required!r}: {p.stdout!r}')
+p,lines=exercise('report preserved',{'draft':False,'branch_moved':True})
+for required in ('merge-sha: '+'c'*40,'branch-cleanup: preserved'):
+ if required not in p.stdout: raise AssertionError(f'missing reporting line {required!r}: {p.stdout!r}')
+p,lines=exercise('report already absent',{'draft':False,'initial_merged':True,'ref_missing':True},puts=0,deletes=0)
+for required in ('merge-sha: '+'c'*40,'branch-cleanup: already-deleted'):
+ if required not in p.stdout: raise AssertionError(f'missing reporting line {required!r}: {p.stdout!r}')
+p,lines=exercise('report cleanup failure',{'draft':False,'delete_error':True},expect=4,reason='cleanup failed',puts=1,deletes=1)
+for required in ('merge-sha: '+'c'*40,'branch-cleanup: failed'):
+ if required not in p.stdout: raise AssertionError(f'missing reporting line {required!r}: {p.stdout!r}')
+for label,cfg,expect in [('report refusal',{'draft':False,'runs':[{'name':'ci','status':'completed','conclusion':'failure'}]},1),('report ambiguous',{'draft':False,'put_error':True},3)]:
+ p,lines=exercise(label,cfg,expect=expect,puts=0 if expect==1 else 1)
+ if 'merge-sha:' in p.stdout or 'branch-cleanup:' in p.stdout:
+  raise AssertionError(f'{label}: refused/ambiguous output carried success reporting: {p.stdout!r}')
+print('finalize forge: draft, readiness, merge reconciliation, base verification, cleanup, and reporting cases passed')
 PY

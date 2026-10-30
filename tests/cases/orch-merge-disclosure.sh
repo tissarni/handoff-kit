@@ -14,6 +14,7 @@ s=open(p).read().replace('updated: 2026-01-01', 'updated: 2026-01-01\nrevision: 
 open(p,'w').write(s)
 PY
 repo="$SANDBOX/repo_under.test"
+git -C "$repo" push -q origin main:dev
 git -C "$repo" remote set-url origin https://github.com/acme/widget.git
 mkdir -p "$SANDBOX/home/.config/handoff"
 policy="$SANDBOX/home/.config/handoff/project-policy.json"

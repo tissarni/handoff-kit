@@ -81,6 +81,10 @@ def run(args=None, setup=None, expect=1, reason=None, legacy=False):
     if expect and any(x.split(' ',1)[0] in ('POST','PUT','PATCH','DELETE') for x in lines): raise AssertionError(f'write before refusal: {lines}')
     return p,lines
 
+p,lines=run(['--repository','acme/widget','--plan',str(repo/'plan.md'),'--branch','feature/x','--base','main'],reason='automatic merges only target dev')
+assert not any('graphql' in x.lower() for x in lines), lines
+assert not any(x.split(' ',1)[0] in ('POST','PUT','PATCH','DELETE') for x in lines), lines
+
 def reset():
     subprocess.run(['git','-C',str(repo),'reset','--hard',head],check=True,stdout=subprocess.DEVNULL)
     write_policy(); ev()

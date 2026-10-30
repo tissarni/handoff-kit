@@ -103,13 +103,13 @@ second_done() { /usr/bin/grep -q '^orchestration: done' "$SECOND_PLAN" 2>/dev/nu
 wait_for 90 second_done || fail "second plan could not start after checkout lock release"
 
 scenario_plan() {
-  local name="$1" mode="${2:-}" brief plan
+  local name="$1" mode="${2:-}" base="${3:-dev}" brief plan
   brief="$(make_brief testsub "$name.md" draft)"
   plan="$(dirname "$brief")/$name-plan.md"
   make_plan "$plan" "$brief"
-  python3 - "$plan" <<'PY'
+  python3 - "$plan" "$base" <<'PY'
 import sys
-p=sys.argv[1]; s=open(p).read().replace('base: main', 'base: dev', 1); open(p,'w').write(s)
+p,base=sys.argv[1:]; s=open(p).read().replace('base: main', 'base: '+base, 1); open(p,'w').write(s)
 PY
   python3 - "$plan" <<'PY'
 import sys
@@ -256,5 +256,32 @@ malformed_held() { /usr/bin/grep -q '^orchestration: awaiting-merge' "$MALFORMED
 wait_for 90 malformed_held || fail "missing verified SHA did not hold for manual verification"
 assert_contains "${MALFORMED_PLAN%.md}.events.log" 'merge outcome ambiguous — verify before resuming'
 if /usr/bin/grep '^PUT ' "$SANDBOX/state/gh.log" >/dev/null; then fail "missing SHA output logged or sent a merge"; fi
+
+# A main-base auto plan still receives final review, but never invokes finalize.
+rm -f "$(git -C "$SANDBOX/repo_under.test" rev-parse --absolute-git-dir)/handoff-plan.lock"
+MAIN_PLAN="$(scenario_plan main-base '' main)"
+mv "$SANDBOX/kit/handoff-merge.py" "$SANDBOX/kit/handoff-merge-real.py"
+cat >"$SANDBOX/kit/handoff-merge.py" <<'PY'
+#!/usr/bin/env python3
+import pathlib,runpy,sys
+root=pathlib.Path(__file__).parent
+if len(sys.argv)>1 and sys.argv[1]=='finalize':
+    with open(pathlib.Path(__file__).parents[1]/'state/finalize.log','a') as f: f.write('finalize\\n')
+sys.argv[0]=str(root/'handoff-merge-real.py')
+runpy.run_path(sys.argv[0],run_name='__main__')
+PY
+chmod +x "$SANDBOX/kit/handoff-merge.py"
+: >"$SANDBOX/state/gh.log"
+: >"$SANDBOX/state/finalize.log"
+count_final_review() { /usr/bin/grep -c '"stage": "final-review"' "$SANDBOX/state/calls.log" || true; }
+final_before="$(count_final_review)"
+_sbx_env
+env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com bash "$SANDBOX/kit/handoff-orchestrate.sh" start "$MAIN_PLAN" --backend claude --publication-owner supervisor >/dev/null 2>&1
+main_awaiting() { /usr/bin/grep -q '^orchestration: awaiting-merge' "$MAIN_PLAN" 2>/dev/null; }
+wait_for 90 main_awaiting || fail "main-base auto plan did not await merge"
+assert_contains "${MAIN_PLAN%.md}.events.log" 'auto-merge only targets dev; base is main'
+assert_eq "$(count_final_review)" "$((final_before + 1))" "main-base final review count"
+[ ! -s "$SANDBOX/state/finalize.log" ] || fail "main-base plan invoked finalize"
+if /usr/bin/grep -E '^(POST graphql|PUT |PATCH |DELETE )' "$SANDBOX/state/gh.log" >/dev/null; then fail "main-base plan caused a merge mutation"; fi
 
 echo ok

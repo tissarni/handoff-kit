@@ -116,6 +116,8 @@ for label,cfg,reason,gql in [
  ('malformed protection',{'draft':False,'protection':{'contexts':'ci','checks':[]}},'malformed required status checks response',False),
  ('missing body section',{'draft':False,'body':'## Feature\nfeature\n## Acceptance\naccept\n## Final review\n'+head+'\n## CI\nci\n'},'incomplete PR body: Limitations',False),
  ('final review omits head',{'draft':False,'body':'## Feature\nfeature\n## Acceptance\naccept\n## Final review\nother\n## CI\nci\n## Limitations\nnone'},'incomplete PR body: Final review',False),
+ ('draft with failed check',{'draft':True,'runs':[{'name':'ci','status':'completed','conclusion':'failure'}]},'required check unsuccessful: ci',False),
+ ('draft missing body section',{'draft':True,'body':'## Feature\nfeature\n'},'incomplete PR body',False),
  ('graphql mutation error',{'draft':True,'graphql_error':True},'GitHub POST graphql failed',True),
  ('changed head after ready',{'draft':True,'post_ready_head':True},'refused after marking ready',True),
 ]:

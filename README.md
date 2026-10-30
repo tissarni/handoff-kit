@@ -182,6 +182,12 @@ The PR body must have non-empty `## Feature`, `## Acceptance`, `## Final review`
 `## Limitations` sections. The `Final review` section must contain the reviewed head SHA.
 `finalize` enforces those sections and the SHA, but PR prose never grants authority.
 
+Feature PRs stay drafts during implementation. Only after every merge check has passed
+(policy, evidence, identity, PR body and required CI on the exact head) does `finalize`
+mark a draft PR ready for review, its single write before the merge. It then re-reads the
+PR and refuses if anything changed; a PR refused at that point stays ready and is not
+merged. Every refusal before that point makes no write.
+
 A successful plan reaches `done`. If a non-`dev` base or an operator refusal needs human
 handling, the plan becomes `awaiting-merge` and keeps its checkout; `resume` verifies a
 matching human merge against the recorded reviewed head before completing. A final-review

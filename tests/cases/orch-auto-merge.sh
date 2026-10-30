@@ -98,7 +98,7 @@ second_done() { /usr/bin/grep -q '^orchestration: done' "$SECOND_PLAN" 2>/dev/nu
 wait_for 90 second_done || fail "second plan could not start after checkout lock release"
 
 scenario_plan() {
-  local name="$1" brief plan
+  local name="$1" mode="${2:-}" brief plan
   brief="$(make_brief testsub "$name.md" draft)"
   plan="$(dirname "$brief")/$name-plan.md"
   make_plan "$plan" "$brief"
@@ -111,9 +111,11 @@ PY
 import json,sys,pathlib
 p,plan,repo=sys.argv[1:]; d=json.load(open(p)); d['repositories'][repo]['assessments']=[{'task':str(pathlib.Path(plan).resolve()),'revision':'r1','risk':'ordinary','reason':'test'}]; open(p,'w').write(json.dumps(d))
 PY
-  python3 - "$SANDBOX/state/forge.json" "$FAKE_HEAD" "$FAKE_BASE" <<'PY'
+  python3 - "$SANDBOX/state/forge.json" "$FAKE_HEAD" "$FAKE_BASE" "$mode" <<'PY'
 import json,sys
-open(sys.argv[1],'w').write(json.dumps({'head':sys.argv[2],'base':sys.argv[3]}))
+state={'head':sys.argv[2],'base':sys.argv[3]}
+if sys.argv[4]=='already': state.update(merged=True,deleted=True)
+open(sys.argv[1],'w').write(json.dumps(state))
 PY
   : >"$SANDBOX/state/gh.log"
   _sbx_env
@@ -170,6 +172,12 @@ wait_for 90 cleanup_done || fail "cleanup failure did not complete merged plan"
 assert_contains "${CLEANUP_PLAN%.md}.events.log" 'MERGED ccccccc into main — verified'
 assert_contains "${CLEANUP_PLAN%.md}.events.log" 'cleanup failed'
 assert_contains "${CLEANUP_PLAN%.md}.events.log" 'feat/test'
+
+ALREADY_PLAN="$(scenario_plan already-absent already)"
+already_done() { /usr/bin/grep -q '^orchestration: done' "$ALREADY_PLAN" 2>/dev/null; }
+wait_for 90 already_done || fail "already-merged plan did not complete"
+assert_contains "${ALREADY_PLAN%.md}.events.log" 'branch cleaned (already deleted)'
+if /usr/bin/grep -E '^(PUT |DELETE )' "$SANDBOX/state/gh.log" >/dev/null; then fail "already-merged reconciliation sent a merge or delete call"; fi
 
 FAKE_CLAUDE=final-review=blockers
 export FAKE_CLAUDE

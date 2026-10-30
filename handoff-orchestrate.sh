@@ -1478,8 +1478,8 @@ auto_finalize() {  # $1 = merge helper, $2 = reviewed head
   fi
   case "$rc" in
     0|4)
-      merge_sha="$(printf '%s\n' "$out" | /usr/bin/grep -E '^merge-sha: [0-9a-fA-F]{40}$' | tail -1 | cut -d' ' -f2)"
-      cleanup="$(printf '%s\n' "$out" | /usr/bin/grep -E '^branch-cleanup: (deleted|preserved|already-deleted|failed)$' | tail -1 | cut -d' ' -f2)"
+      merge_sha="$(printf '%s\n' "$out" | /usr/bin/grep -E '^merge-sha: [0-9a-fA-F]{40}$' | tail -1 | cut -d' ' -f2 || true)"
+      cleanup="$(printf '%s\n' "$out" | /usr/bin/grep -E '^branch-cleanup: (deleted|preserved|already-deleted|failed)$' | tail -1 | cut -d' ' -f2 || true)"
       if ! [[ "$merge_sha" =~ ^[0-9a-fA-F]{40}$ ]] || { [ "$rc" -eq 0 ] && [ "$cleanup" = failed ]; } || { [ "$rc" -eq 4 ] && [ "$cleanup" != failed ]; }; then
         rc=3
       else

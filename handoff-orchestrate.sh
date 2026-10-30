@@ -431,7 +431,7 @@ PY
     effective="$(python3 "$helper" effective --repo "$REPO" --task "$task" --revision "$PLAN_REVISION" 2>/dev/null || true)"
     [ -n "$effective" ] || effective='manual — policy decision unavailable'
   fi
-  if [ "$forge" != github ]; then consequence='manual: unchanged behaviour'
+  if [ "$forge" != github ] || [ "$configured" != auto ]; then consequence='manual: unchanged behaviour'
   elif [ "$effective" = auto ]; then consequence="auto: on whole-feature final-review PASS the kit squash-merges into $BASE_BRANCH"
   else
     consequence="manual: the plan ends at its PR; this repository's sequence waits for your merge"

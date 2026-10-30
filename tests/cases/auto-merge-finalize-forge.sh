@@ -34,15 +34,25 @@ root=pathlib.Path(os.environ['FAKE_ROOT']); state=root/'forge.json'; log=root/'f
 d=json.loads(state.read_text()); c=json.loads(ctl.read_text()); a=sys.argv[1:]; method=a[a.index('-X')+1] if '-X' in a else 'GET'; ep='graphql' if 'graphql' in a else next((x for x in a if x.startswith('repos/')), '')
 log.open('a').write(method+' '+ep+'\\n')
 if ep.endswith('/pulls?state=all&head=acme:feature/x'):
- p={'number':7,'state':'open','merged_at':None,'merge_commit_sha':None,'head':{'ref':'feature/x','sha':os.environ['FAKE_HEAD'],'repo':{'full_name':'acme/widget'}},'base':{'ref':'dev','sha':os.environ['FAKE_BASE'],'repo':{'full_name':'acme/widget'}},'draft':c.get('draft',True)}; print(json.dumps([p])); sys.exit(0)
+ p={'number':7,'state':'open','merged_at':None,'merge_commit_sha':None,'head':{'ref':'feature/x','sha':c.get('list_head',os.environ['FAKE_HEAD']),'repo':{'full_name':'acme/widget'}},'base':{'ref':'dev','sha':os.environ['FAKE_BASE'],'repo':{'full_name':'acme/widget'}},'draft':c.get('draft',True)}; print(json.dumps(c.get('rows',[p]))); sys.exit(0)
 if '/pulls/7/merge' in ep and method=='PUT':
  assert any('sha='+os.environ['FAKE_HEAD'] in x for x in a) and any('merge_method=squash' in x for x in a); d['merged']=True; state.write_text(json.dumps(d)); print('{"merged":true}'); sys.exit(0)
 if ep.endswith('/pulls/7'):
- print(json.dumps({'number':7,'node_id':'PR_node','body':'## Feature\\nfeature\\n## Acceptance\\naccept\\n## Final review\\n'+os.environ['FAKE_HEAD']+'\\n## CI\\nci\\n## Limitations\\nnone','state':'open','draft':c.get('draft',True),'merged':d['merged'],'merge_commit_sha':'c'*40 if d['merged'] else None,'mergeable_state':'clean','base':{'ref':'dev','sha':os.environ['FAKE_BASE'],'repo':{'full_name':'acme/widget'}},'head':{'ref':'feature/x','sha':os.environ['FAKE_HEAD'],'repo':{'full_name':'acme/widget'}}})); sys.exit(0)
-if ep.endswith('/protection/required_status_checks'): print(json.dumps({'contexts':['ci'],'checks':[]})); sys.exit(0)
-if ep.endswith('/commits/'+os.environ['FAKE_HEAD']+'/status'): print(json.dumps({'state':'success','statuses':[]})); sys.exit(0)
-if '/commits/'+os.environ['FAKE_HEAD']+'/check-runs' in ep: print(json.dumps({'total_count':1,'check_runs':[{'name':'ci','status':'completed','conclusion':'success','started_at':'2026-01-01T00:00:00Z','id':1}]})); sys.exit(0)
-if ep == 'graphql': sys.stdout.write('{}'); sys.exit(0)
+ print(json.dumps({'number':7,'node_id':'PR_node','body':c.get('body','## Feature\\nfeature\\n## Acceptance\\naccept\\n## Final review\\n'+os.environ['FAKE_HEAD']+'\\n## CI\\nci\\n## Limitations\\nnone'),'state':'open','draft':c.get('draft',True),'merged':d['merged'],'merge_commit_sha':'c'*40 if d['merged'] else None,'mergeable_state':'clean','base':{'ref':'dev','sha':os.environ['FAKE_BASE'],'repo':{'full_name':'acme/widget'}},'head':{'ref':'feature/x','sha':('d'*40 if d.get('ready') and c.get('post_ready_head') else c.get('head_sha',os.environ['FAKE_HEAD'])),'repo':{'full_name':'acme/widget'}}})); sys.exit(0)
+if ep.endswith('/protection/required_status_checks'):
+ if c.get('protection_http'): print('HTTP '+str(c['protection_http']),file=sys.stderr); sys.exit(1)
+ print(json.dumps(c.get('protection',{'contexts':['ci'],'checks':[]}))); sys.exit(0)
+if ep.endswith('/commits/'+os.environ['FAKE_HEAD']+'/status'): print(json.dumps({'state':c.get('combined_state','success'),'statuses':c.get('statuses',[])})); sys.exit(0)
+if '/commits/'+os.environ['FAKE_HEAD']+'/check-runs' in ep:
+ page=int(ep.rsplit('page=',1)[1])
+ runs=c.get('runs',[{'name':'ci','status':'completed','conclusion':'success','started_at':'2026-01-01T00:00:00Z','id':1}])
+ if c.get('page2_failure'):
+  runs=([{'name':'ci','status':'completed','conclusion':'success','started_at':'2026-01-01T00:00:00Z','id':1}]*100 + [{'name':'ci','status':'completed','conclusion':'failure','started_at':'2026-01-02T00:00:00Z','id':2}])
+ batch=runs[(page-1)*100:page*100]
+ print(json.dumps({'total_count':len(runs),'check_runs':batch})); sys.exit(0)
+if ep == 'graphql':
+ if c.get('graphql_error'): print('graphql mutation error',file=sys.stderr); sys.exit(1)
+ d['ready']=True; state.write_text(json.dumps(d)); sys.stdout.write('{}'); sys.exit(0)
 if ep.endswith('/git/ref/heads/feature/x'): print(json.dumps({'object':{'sha':os.environ['FAKE_HEAD']} })); sys.exit(0)
 if ep.endswith('/git/refs/heads/feature/x') and method=='DELETE': sys.exit(0)
 sys.exit(8)
@@ -57,5 +67,20 @@ if p.returncode != 0: raise AssertionError(f'expected draft finalize success, go
 if lines.count('POST graphql') != 1: raise AssertionError(f'expected one GraphQL ready mutation: {lines}')
 if sum(x.startswith('PUT ') for x in lines) != 1: raise AssertionError(f'expected one merge PUT: {lines}')
 if not (lines.index('POST graphql') < next(i for i,x in enumerate(lines) if i > lines.index('POST graphql') and x.startswith('GET repos/acme/widget/pulls/7')) < next(i for i,x in enumerate(lines) if x.startswith('PUT '))): raise AssertionError(f'expected graphql, re-GET, PUT order: {lines}')
-print('finalize forge: draft positive readiness sequence passed')
+def exercise(label, cfg, expect=0, reason=None, graphql=None):
+ control.write_text(json.dumps(cfg)); state.write_text('{"merged":false}'); log.write_text('')
+ p=subprocess.run(argv,text=True,capture_output=True,env=env)
+ lines=log.read_text().splitlines()
+ if p.returncode != expect: raise AssertionError(f'{label}: exit {p.returncode}, wanted {expect}: {p.stderr}; calls={lines}')
+ if reason and reason not in p.stderr: raise AssertionError(f'{label}: missing refusal {reason!r}: {p.stderr}')
+ if expect and (not p.stderr.startswith('handoff-merge: ') or any(x.split(' ',1)[0] in ('POST','PUT','PATCH','DELETE') for x in lines)): raise AssertionError(f'{label}: uncontrolled refusal or write: {p.stderr} {lines}')
+ if graphql is not None and ('POST graphql' in lines) != graphql: raise AssertionError(f'{label}: GraphQL calls unexpected: {lines}')
+ if expect == 0 and not any(x.startswith('PUT ') for x in lines): raise AssertionError(f'{label}: expected merge PUT: {lines}')
+ return p, lines
+# Non-draft and accepted protection fallbacks.
+p,lines=exercise('non-draft positive',{'draft':False})
+if 'POST graphql' in lines: raise AssertionError(f'non-draft PR used GraphQL: {lines}')
+for label,cfg in [('403 fallback',{'draft':False,'protection_http':403,'protection':{},'runs':[{'name':'info','status':'completed','conclusion':'neutral'},{'name':'skip','status':'completed','conclusion':'skipped'},{'name':'green','status':'completed','conclusion':'success'}]}),('empty protection fallback',{'draft':False,'protection':{'contexts':[],'checks':[]},'runs':[{'name':'info','status':'completed','conclusion':'neutral'},{'name':'skip','status':'completed','conclusion':'skipped'},{'name':'green','status':'completed','conclusion':'success'}]})]:
+ exercise(label,cfg)
+print('finalize forge: draft, non-draft, and readiness fallback positives passed')
 PY

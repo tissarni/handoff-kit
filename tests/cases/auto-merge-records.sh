@@ -41,6 +41,21 @@ run release --repo "$repo" --task "$task" >/dev/null
 expect effective --repo "$repo" --task "$task" --revision r1 auto
 HANDOFF_MERGE_HOLD=1 expect effective --repo "$repo" --task "$task" --revision r1 'manual — hold'
 
+# An override binds exactly one (task, revision, risk): it never carries to another task,
+# another revision or another risk class.
+isolated=/plans/task-isolation.md
+run assess --repo "$repo" --task "$isolated" --revision r1 --risk breaking-api --reason reviewed >/dev/null
+run override --repo "$repo" --task /plans/foreign-isolation.md --revision r1 --risk breaking-api --approve >/dev/null
+expect effective --repo "$repo" --task "$isolated" --revision r1 'manual — risk breaking-api'
+run override --repo "$repo" --task "$isolated" --revision r0 --risk breaking-api --approve >/dev/null
+expect effective --repo "$repo" --task "$isolated" --revision r1 'manual — risk breaking-api'
+run assess --repo "$repo" --task "$isolated" --revision r2 --risk breaking-api --reason reviewed >/dev/null
+run override --repo "$repo" --task "$isolated" --revision r1 --risk breaking-api --approve >/dev/null
+expect effective --repo "$repo" --task "$isolated" --revision r2 'manual — risk breaking-api'
+expect effective --repo "$repo" --task "$isolated" --revision r1 auto
+run override --repo "$repo" --task "$isolated" --revision r2 --risk ordinary --approve >/dev/null
+expect effective --repo "$repo" --task "$isolated" --revision r2 'manual — risk breaking-api'
+
 # Legacy version-1 entries retain their defaults for all newly added records.
 python3 - "$home/.config/handoff/project-policy.json" "$repo" <<'PY'
 import json, sys

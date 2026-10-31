@@ -568,7 +568,8 @@ def _verify_merge_and_cleanup(slug: str, number: int, head: str, branch: str, ba
             raise FinalizeFailure("ambiguous: base ref could not be verified", 3)
         if base_sha != merge_sha:
             comparison = _gh("GET", f"repos/{slug}/compare/{merge_sha}...{base_sha}")
-            if comparison.get("status") not in ("identical", "behind"):
+            # compare BASE...HEAD describes HEAD relative to BASE: base containing the merge is "ahead".
+            if comparison.get("status") not in ("identical", "ahead"):
                 raise FinalizeFailure("ambiguous: merge commit is not contained in base", 3)
     except FinalizeFailure:
         raise

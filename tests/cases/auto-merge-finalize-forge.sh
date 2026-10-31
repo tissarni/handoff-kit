@@ -127,10 +127,11 @@ for label,cfg,expect,reason,puts,deletes in [
  ('PUT error reconciled merged',{'draft':False,'put_error':True,'merge_on_error':True},0,None,1,1),
  ('PUT error remains unmerged',{'draft':False,'put_error':True},3,'ambiguous',1,0),
  ('base points at merge',{'draft':False,'base_sha':'c'*40},0,None,1,1),
+ # GitHub compare BASE...HEAD reports HEAD relative to BASE: merge_sha...base_sha is "ahead" when base contains the merge.
  ('compare identical',{'draft':False,'compare_status':'identical'},0,None,1,1),
- ('compare behind',{'draft':False,'compare_status':'behind'},0,None,1,1),
+ ('compare ahead',{'draft':False,'compare_status':'ahead'},0,None,1,1),
  ('compare diverged',{'draft':False,'compare_status':'diverged'},3,'ambiguous',1,0),
- ('compare ahead',{'draft':False,'compare_status':'ahead'},3,'ambiguous',1,0),
+ ('compare behind',{'draft':False,'compare_status':'behind'},3,'ambiguous',1,0),
  ('read-back GET fails',{'draft':False,'pr_get_error':True,'pr_get_error_after_put':True},3,'ambiguous',1,0),
  ('compare GET fails',{'draft':False,'compare_error':True},3,'ambiguous',1,0),
  ('branch moved',{'draft':False,'branch_moved':True},0,'branch preserved',1,0),
@@ -139,6 +140,22 @@ for label,cfg,expect,reason,puts,deletes in [
  ('branch ref GET fails',{'draft':False,'ref_error':True},4,'cleanup failed',1,0),
 ]:
  p,lines=exercise(label,cfg,expect=expect,reason=reason,puts=puts,deletes=deletes)
+# Pull request candidate selection: only same-repository rows for this branch, reviewed head and dev count.
+def row(number, state='open', merged=False, head_repo='acme/widget', sha=None, base_ref='dev'):
+ return {'number':number,'state':state,'merged_at':'2026-01-01T00:00:00Z' if merged else None,'merge_commit_sha':'c'*40 if merged else None,'draft':False,
+         'head':{'ref':'feature/x','sha':sha or head,'repo':{'full_name':head_repo}},'base':{'ref':base_ref,'sha':base,'repo':{'full_name':'acme/widget'}}}
+for label,rows,expect,reason in [
+ ('no candidates',[],1,'ambiguous pull request candidates: none'),
+ ('open and merged',[row(7),row(8,'closed',True)],1,'ambiguous pull request candidates: 7, 8'),
+ ('two open',[row(7),row(8)],1,'ambiguous pull request candidates: 7, 8'),
+ ('two merged',[row(7,'closed',True),row(8,'closed',True)],1,'ambiguous pull request candidates: 7, 8'),
+ ('closed unmerged only',[row(9,'closed')],1,'ambiguous pull request candidates: 9'),
+ ('open with closed unmerged',[row(7),row(9,'closed')],0,None),
+ ('open with foreign head repository',[row(7),row(8,head_repo='other/widget')],0,None),
+ ('open with stale head',[row(7),row(8,sha='e'*40)],0,None),
+ ('base mismatch only',[row(8,base_ref='main')],1,'base changed; pull request candidates: 8'),
+]:
+ exercise(label,{'draft':False,'rows':rows},expect=expect,reason=reason,graphql=False if expect == 1 else None)
 p,lines=exercise('report deleted',{'draft':False})
 for required in ('merge-sha: '+'c'*40,'branch-cleanup: deleted'):
  if required not in p.stdout: raise AssertionError(f'missing reporting line {required!r}: {p.stdout!r}')

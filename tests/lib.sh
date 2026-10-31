@@ -111,10 +111,13 @@ EOF
   local src="${HANDOFF_SCRIPTS_DIR:-$REPO_ROOT}"
   mkdir -p "$SANDBOX/kit"
   cp "$src/handoff-launch.sh" "$SANDBOX/kit/handoff-launch.sh"
+  [ -f "$src/handoff-final-review.py" ] && cp "$src/handoff-final-review.py" "$SANDBOX/kit/handoff-final-review.py"
   cp "$src/handoff-orchestrate.sh" "$SANDBOX/kit/handoff-orchestrate.sh"
   local usage_src="$src"
   [ -f "$usage_src/handoff-usage.py" ] || usage_src="$REPO_ROOT"
   [ -f "$usage_src/handoff-usage.py" ] && cp "$usage_src/handoff-usage.py" "$SANDBOX/kit/handoff-usage.py"
+  local merge_src="$src"
+  [ -f "$merge_src/handoff-merge.py" ] && cp "$merge_src/handoff-merge.py" "$SANDBOX/kit/handoff-merge.py"
   cp -r "$REPO_ROOT/hooks" "$SANDBOX/kit/hooks"
   [ -d "$REPO_ROOT/guards" ] && cp -r "$REPO_ROOT/guards" "$SANDBOX/kit/guards"
   cp -r "$REPO_ROOT/skills" "$SANDBOX/kit/skills"
@@ -157,6 +160,8 @@ _sbx_env() {
     "LANG=C.UTF-8"
     "HANDOFF_LIMIT_WAIT=1"
   )
+  [ -n "${FAKE_REVIEW_MODE+x}" ] && SBX_ENV+=("FAKE_REVIEW_MODE=$FAKE_REVIEW_MODE")
+  [ -n "${HANDOFF_FINAL_REVIEW_TIMEOUT+x}" ] && SBX_ENV+=("HANDOFF_FINAL_REVIEW_TIMEOUT=$HANDOFF_FINAL_REVIEW_TIMEOUT")
   [ -n "${PYTEST_ADDOPTS+x}" ] && SBX_ENV+=("PYTEST_ADDOPTS=$PYTEST_ADDOPTS")
 }
 

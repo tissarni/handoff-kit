@@ -4,11 +4,11 @@
 #   install.sh [--vault <dir>] [--defaults <path relative to the vault>] [--projects <dir>] [--hermes-profiles]
 #
 # Writes, all under $HOME:
-#   ~/.config/handoff/config.env   VAULT, HANDOFF_DEFAULTS and HANDOFF_PROJECTS; other lines kept
+#   ~/.config/handoff/config.env   vault roots and HANDOFF_AUTO_MERGE; other lines kept
 #   ~/.local/bin/handoff-launch, handoff-orchestrate, brief-check   symlinks into this kit
 #   ~/.claude/skills/<name>/        each skill under skills/, replaced whole
 #   ~/.config/systemd/user/handoff-watchdog@.service and .timer   copied from systemd/
-#   ~/.hermes/profiles/{review,run,close}   only with --hermes-profiles: each missing profile
+#   ~/.hermes/profiles/{review,run,close,final-review} only with --hermes-profiles: each missing profile
 #                                  is built from hermes/profiles/, an existing one is never touched
 # A flag left out keeps the value config.env already has. The environment's VAULT,
 # HANDOFF_DEFAULTS and HANDOFF_PROJECTS are ignored here: the file must not take a value
@@ -32,24 +32,37 @@ esac
 # <<< portable preamble
 set -euo pipefail
 KIT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-USAGE="usage: install.sh [--vault <dir>] [--defaults <path relative to the vault>] [--projects <dir>] [--hermes-profiles]"
+USAGE="usage: install.sh [--vault <dir>] [--defaults <path relative to the vault>] [--projects <dir>] [--auto-merge true|false] [--hermes-profiles]"
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 usage() { printf '%s\n' "$USAGE" >&2; exit 2; }
 [ -n "${HOME:-}" ] || die "HOME is not set"
 CFG="$HOME/.config/handoff/config.env"
 cfg_get() { [ -f "$CFG" ] && /usr/bin/grep -E "^$1=" "$CFG" | tail -n 1 | cut -d= -f2- | tr -d "\"'" || true; }
-vault="" defaults="" projects="" hermes=0
+vault="" defaults="" projects="" auto_merge="" hermes=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --vault|--defaults|--projects)
+    --vault|--defaults|--projects|--auto-merge)
       [ $# -ge 2 ] || usage
-      case "$1" in --vault) vault="$2" ;; --defaults) defaults="$2" ;; --projects) projects="$2" ;; esac
+      case "$1" in --vault) vault="$2" ;; --defaults) defaults="$2" ;; --projects) projects="$2" ;; --auto-merge) auto_merge="$2" ;; esac
       shift 2 ;;
     --hermes-profiles) hermes=1; shift ;;
     *) usage ;;
   esac
 done
+if [ -n "$auto_merge" ] && [ "$auto_merge" != true ] && [ "$auto_merge" != false ]; then die "--auto-merge must be exactly true or false"; fi
 vault="${vault:-$(cfg_get VAULT)}"; defaults="${defaults:-$(cfg_get HANDOFF_DEFAULTS)}"; projects="${projects:-$(cfg_get HANDOFF_PROJECTS)}"
+saved_auto_merge="$(cfg_get HANDOFF_AUTO_MERGE)"
+if [ -z "$auto_merge" ]; then
+  case "$saved_auto_merge" in true|false) auto_merge="$saved_auto_merge" ;;
+    "") auto_merge=false
+      if [ -t 0 ]; then
+        printf 'Enable repository auto-merge by default? [y/N] ' >&2
+        IFS= read -r answer || answer=""
+        case "$answer" in y|Y|yes|YES) auto_merge=true ;; ""|n|N|no|NO) : ;; *) die "answer y or n; no configuration was written" ;; esac
+      fi ;;
+    *) die "invalid HANDOFF_AUTO_MERGE in config.env; pass --auto-merge true or false" ;;
+  esac
+fi
 # Check everything before writing anything: a refused install changes no file.
 [ -n "$vault" ] || die "no vault: pass --vault <dir> (config.env has no VAULT= line yet)"
 [ -n "$defaults" ] || die "no defaults file: pass --defaults <path relative to the vault>"
@@ -61,14 +74,19 @@ for n in handoff-launch handoff-orchestrate brief-check; do [ -x "$KIT/$n.sh" ] 
 for u in handoff-watchdog@.service handoff-watchdog@.timer; do [ -f "$KIT/systemd/$u" ] || die "$KIT/systemd/$u is missing"; done
 if [ "$hermes" = 1 ]; then
   for n in review run close; do [ -f "$KIT/hermes/profiles/$n/SOUL.md" ] || die "$KIT/hermes/profiles/$n/SOUL.md is missing"; done
+  [ -d "$KIT/hermes/profiles/final-review" ] || die "$KIT/hermes/profiles/final-review is missing"
   [ -d "$HOME/.hermes" ] || die "no $HOME/.hermes: install hermes first, or leave out --hermes-profiles"
 fi
 mkdir -p "$(dirname "$CFG")"; tmp="$CFG.tmp.$$"
-{ [ -f "$CFG" ] && /usr/bin/grep -vE '^(VAULT|HANDOFF_DEFAULTS|HANDOFF_PROJECTS)=' "$CFG" || true
-  printf 'VAULT=%s\nHANDOFF_DEFAULTS=%s\nHANDOFF_PROJECTS=%s\n' "$vault" "$defaults" "$projects"; } >"$tmp"
+{ [ -f "$CFG" ] && /usr/bin/grep -vE '^(VAULT|HANDOFF_DEFAULTS|HANDOFF_PROJECTS|HANDOFF_AUTO_MERGE)=' "$CFG" || true
+  printf 'VAULT=%s\nHANDOFF_DEFAULTS=%s\nHANDOFF_PROJECTS=%s\nHANDOFF_AUTO_MERGE=%s\n' "$vault" "$defaults" "$projects" "$auto_merge"; } >"$tmp"
 mv -f "$tmp" "$CFG"; echo "config: $CFG"
 mkdir -p "$HOME/.local/bin"
 for n in handoff-launch handoff-orchestrate brief-check; do ln -sfn "$KIT/$n.sh" "$HOME/.local/bin/$n"; echo "linked $HOME/.local/bin/$n -> $KIT/$n.sh"; done
+if [ -f "$KIT/handoff-merge.py" ]; then
+  ln -sfn "$KIT/handoff-merge.py" "$HOME/.local/bin/handoff-policy"
+  echo "linked $HOME/.local/bin/handoff-policy -> $KIT/handoff-merge.py"
+fi
 mkdir -p "$HOME/.claude/skills"
 for d in "$KIT"/skills/*/; do [ -d "$d" ] || continue; name="$(basename "$d")"; rm -rf "$HOME/.claude/skills/$name"; cp -R "$d" "$HOME/.claude/skills/$name"; echo "installed skill $name"; done
 units="$HOME/.config/systemd/user"; mkdir -p "$units"
@@ -77,11 +95,11 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload >/dev/
 else echo "NOTE: no systemd user session — units written to $units, not reloaded"; fi
 if [ "$hermes" = 1 ]; then
   hp="$HOME/.hermes/profiles"; made=0
-  for n in review run close; do
+  for n in review run close final-review; do
     d="$hp/$n"
     if [ -e "$d" ] || [ -L "$d" ]; then echo "kept hermes profile $n: $d exists"; continue; fi
     mkdir -p "$hp"; t="$hp/.$n.tmp.$$"; rm -rf "$t"; mkdir "$t"
-    cp "$KIT/hermes/profiles/$n/SOUL.md" "$t/SOUL.md"
+    if [ "$n" != final-review ]; then cp "$KIT/hermes/profiles/$n/SOUL.md" "$t/SOUL.md"; fi
     # The model: block only (it can hold a provider URL or a key): never printed, mode 600.
     if /usr/bin/grep -q '^model:' "$HOME/.hermes/config.yaml" 2>/dev/null; then
       ( umask 077; awk '/^model:/{f=1;print;next} f&&/^[^ ]/{f=0} f{print}' "$HOME/.hermes/config.yaml" >"$t/config.yaml" )

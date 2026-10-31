@@ -33,6 +33,7 @@ if [ -n "${FAKE_CLAUDE:-}" ]; then
   for p in "${_pairs[@]}"; do
     k="${p%%=*}"; v="${p#*=}"
     [ "$k" = "$STAGE" ] && behavior="$v"
+    [ "$k" = "$STAGE@$BRIEF_BASE" ] && behavior="$v"
   done
 fi
 case "$STAGE" in
@@ -41,16 +42,17 @@ case "$STAGE" in
   run)     behavior="${behavior:-complete}" ;;
   close)   behavior="${behavior:-PASS}" ;;
   debrief) behavior="${behavior:-closed}" ;;
+  final-review) behavior="${behavior:-PASS}" ;;
   *)       behavior="${behavior:-complete}" ;;
 esac
 
 # A FAIL once, then the second close: PASS after a fix-up, or a verdict on the proof
 case "$behavior" in
-  FAIL-fixable-once|FAIL-preexisting-once|FAIL-fixable-pre-once)
+  FAIL-fixable-once|FAIL-preexisting-once|FAIL-fixable-pre-once|FAIL-split-once)
     if [ ! -f "$FAKE_STATE_DIR/fail-once-$STAGE" ]; then
       touch "$FAKE_STATE_DIR/fail-once-$STAGE"
       behavior="${behavior%-once}"
-    elif [ "$behavior" = "FAIL-fixable-once" ]; then
+    elif [ "$behavior" = "FAIL-fixable-once" ] || [ "$behavior" = "FAIL-split-once" ]; then
       behavior=PASS
     else
       behavior=judge-proof
@@ -150,6 +152,46 @@ if [ "$behavior" = "limit" ]; then
   EXIT=1
 else
   case "$STAGE" in
+    final-review)
+      review_head="$(printf '%s\n' "$PROMPT" | /usr/bin/grep -oE '^head: [0-9a-f]{40}' | /usr/bin/grep -oE '[0-9a-f]{40}' | head -1)"
+      review_base="$(printf '%s\n' "$PROMPT" | /usr/bin/grep -oE '^base: [0-9a-f]{40}' | /usr/bin/grep -oE '[0-9a-f]{40}' | head -1)"
+      case "$behavior" in
+        PASS) review_verdict=PASS; blockers=none; review_risk=ordinary ;;
+        no-block) STDOUT_TEXT="review completed without a final block" ;;
+        two-block)
+          STDOUT_TEXT="FINAL REVIEW
+verdict: FAIL
+head: $review_head
+base: $review_base
+blockers: fake blocker
+END FINAL REVIEW
+FINAL REVIEW
+verdict: FAIL
+head: $review_head
+base: $review_base
+blockers: fake blocker
+END FINAL REVIEW" ;;
+        wrong-head) review_verdict=PASS; review_head=0000000000000000000000000000000000000000; blockers=none ;;
+        wrong-base) review_verdict=PASS; review_base=0000000000000000000000000000000000000000; blockers=none ;;
+        blockers) review_verdict=PASS; blockers="found blocker" ;;
+        move-head)
+          printf 'review mutation\n' >"$PWD/final-review-mutation.txt"
+          git -c user.name=test -c user.email=test@example.invalid add final-review-mutation.txt
+          git -c user.name=test -c user.email=test@example.invalid commit -q -m "test: review mutation"
+          review_verdict=PASS; blockers=none ;;
+        *) review_verdict=FAIL; blockers="fake blocker" ;;
+      esac
+      if [ "$behavior" != "no-block" ] && [ "$behavior" != "two-block" ]; then
+        STDOUT_TEXT="FINAL REVIEW
+verdict: $review_verdict
+head: $review_head
+base: $review_base
+blockers: $blockers
+risk: ${review_risk:-ordinary}
+END FINAL REVIEW"
+      fi
+      TRANSCRIPT_TEXT="$STDOUT_TEXT"
+      ;;
     review)
       case "$behavior" in
         RUN) verdict=RUN ;; REVISE) verdict=REVISE ;; REWRITE) verdict=REWRITE ;; *) verdict=RUN ;;
@@ -238,7 +280,16 @@ CLASS: accept?" ;;
         FAIL-fixable) v=FAIL; f="- §4.1 fake criterion — refuted — fake evidence: exit 1"; class_line="
 CLASS: fixable" ;;
         FAIL-mixed) v=FAIL; f="- §4.1 fake criterion — refuted — fake evidence: exit 1
-- the report — refuted. fake evidence"; class_line="
+- the report — refuted — fake evidence"; class_line="
+CLASS: fixable" ;;
+        FAIL-mixed-verdict) v=FAIL; f="- §4.1 branch observation — confirmed — branch matches; timing claim — unconfirmed — needs evidence"; class_line="
+CLASS: fixable" ;;
+        FAIL-split) v=FAIL; f="- §4.1 branch observation — confirmed — the expected branch is present
+- §4.2 timing claim — unconfirmed — no timing evidence was recorded"; class_line="
+CLASS: fixable" ;;
+        FAIL-unmapped) v=FAIL; f="- report honesty and security scope — unconfirmed — no supporting evidence was recorded"; class_line="
+CLASS: fixable" ;;
+        FAIL-archived-mix) v=FAIL; f="- branch observation and timing — confirmed — the branch is present, but timing remains unconfirmed because no timing evidence was recorded"; class_line="
 CLASS: fixable" ;;
         FAIL-unprefixed) v=FAIL; f="- the PR description — refuted — fake evidence"; class_line="
 CLASS: fixable" ;;

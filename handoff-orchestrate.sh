@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drive a phase of handoff briefs end-to-end with no human between gates.
 #
-#   handoff-orchestrate start  <plan> [--backend <b>] [--model <m>]
+#   handoff-orchestrate start  <plan> [--backend <b>] [--model <m>] [--publication-owner runner|supervisor]
 #       Pre-flight, record the repo baseline, take the lock, launch a detached driver
 #       that runs `handoff-launch.sh loop <brief> --gate auto --backend <b>` for every
 #       brief of the current phase, in order. The driver reads the loop's exit code and
@@ -20,7 +20,7 @@
 #   handoff-orchestrate stop   <plan>
 #       Kill the driver and the current stage, mark orchestration: paused, leave the
 #       briefs as the launcher left them. Idempotent.
-#   handoff-orchestrate resume <plan> [--backend <b>] [--model <m>]
+#   handoff-orchestrate resume <plan> [--backend <b>] [--model <m>] [--publication-owner runner|supervisor]
 #       Re-derive everything from disk, record a fresh baseline (the repo after the hand
 #       fix), continue from the first brief not closed, from its current handoff: state.
 #       Exactly one command after a fix at a break. A broken or paused phase whose
@@ -44,11 +44,10 @@
 #   <brief>.failed-<ts>.log · <brief>.killed-<ts>.log   a loop's output when it failed or was killed
 #
 # Branch flow: the plan branch is a feature branch cut from `base:` (plan field;
-# default dev when origin has it, else main). The run stage pushes every commit as it lands
-# and opens the draft PR; after each closed brief the driver pushes whatever the run left
-# unpushed and opens the PR if none is open. start/resume put the repo on the plan branch
-# themselves, cutting it from origin/<base> and pushing it when it does not exist yet — no
-# human creates branches or PRs. The driver never merges and never pushes to a shared
+# default dev when origin has it, else main). With publication owner runner, the run and
+# driver publish the draft PR as before. With supervisor, runs and driver stay local and
+# the supervisor owns later publication. start/resume put the repo on the plan branch,
+# cutting it from origin/<base> when needed. The driver never merges or pushes to a shared
 # branch — a plan whose branch IS one is refused at parse time.
 #
 # Exit codes (read by the skill and by the timer unit):
@@ -139,26 +138,71 @@ STATUS="$BASE.status.md"; EVENTS="$BASE.events.log"; LOCK="$BASE.lock"
 BASELINE="$BASE.baseline"; STAGE_FILE="$BASE.stage"; DRIVER_LOG="$BASE.driver.log"
 TICK_FILE="$BASE.tick"
 
-BACKEND_ARG=""; MODEL_ARG=""; _next=""
+BACKEND_ARG=""; MODEL_ARG=""; PUBLICATION_OWNER="runner"; PUBLICATION_OWNER_ARG=""; PUBLICATION_OWNER_SET=0; _next=""
 for a in "${@:3}"; do
   case "$_next" in
     backend) BACKEND_ARG="$a"; _next=""; continue ;;
     model)   MODEL_ARG="$a";   _next=""; continue ;;
+    publication-owner)
+      PUBLICATION_OWNER_ARG="$a"; PUBLICATION_OWNER_SET=1
+      case "$a" in runner|supervisor) ;; *) die "--publication-owner must be runner or supervisor" ;; esac
+      _next=""; continue ;;
   esac
   case "$a" in
     --backend)   _next=backend ;;
     --model)     _next=model ;;
+    --publication-owner) _next=publication-owner ;;
     --backend=*) BACKEND_ARG="${a#--backend=}" ;;
     --model=*)   MODEL_ARG="${a#--model=}" ;;
+    --publication-owner=*)
+      PUBLICATION_OWNER_ARG="${a#--publication-owner=}"; PUBLICATION_OWNER_SET=1
+      case "$PUBLICATION_OWNER_ARG" in runner|supervisor) ;; *) die "--publication-owner must be runner or supervisor" ;; esac
+      ;;
     *) die "unknown flag: $a" ;;
   esac
 done
 [ -z "$_next" ] || die "--$_next needs a value"
+if [ "$PUBLICATION_OWNER_SET" -eq 1 ]; then PUBLICATION_OWNER="$PUBLICATION_OWNER_ARG"; fi
+case "$CMD" in start|resume|__driver) ;; *)
+  [ "$PUBLICATION_OWNER_SET" -eq 0 ] || die "--publication-owner only applies to start or resume" ;;
+esac
 
 # ---------------------------------------------------------------- helpers
 now_s() { date +%s; }
 ts()    { date -d "@$1" '+%F %T'; }
 log_event() { printf '%s %s\n' "$(ts "$(now_s)")" "$1" >>"$EVENTS"; }
+# Recovery trusts only the latest owner-bearing START/RESUME event, never plan or brief prose.
+# Event logs with no owner-bearing record keep the historical runner default.
+recorded_publication_owner() {
+  python3 - "$EVENTS" <<'PY'
+import re, sys
+action = re.compile(r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (?:START|RESUME)\b')
+has_key = re.compile(r'(?:^|\s)publication-owner\b')
+record = re.compile(
+    r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (?:START|RESUME) '
+    r'backend=(?:claude|hermes|devin) model=.+ publication-owner=(?P<owner>runner|supervisor) '
+    r'from .+ \(handoff: [^)]+\) · baseline [0-9a-f]{7} on [^,\s]+, [0-9]+ dirty paths$'
+)
+try:
+    lines = open(sys.argv[1], encoding='utf-8').read().splitlines()
+except FileNotFoundError:
+    lines = []
+latest = None
+for line in lines:
+    if not action.match(line):
+        continue
+    header, separator, _ = line.rpartition(' from ')
+    owner_header = header if separator else line
+    if has_key.search(owner_header):
+        latest = line
+if latest is None:
+    # Genuine owner-absent legacy records retain the historical runner behavior.
+    print('runner')
+else:
+    match = record.fullmatch(latest)
+    print(match.group('owner') if match else '__invalid__')
+PY
+}
 fm_scalar() {  # $1 = file with frontmatter, $2 = key -> value or empty
   python3 - "$1" "$2" <<'PY'
 import sys
@@ -235,7 +279,7 @@ out = {
   'PLAN_ORCH': scalar('orchestration'), 'PLAN_PHASE_IDX': str(phase_idx), 'PLAN_PHASE_COUNT': str(len(phases)),
   'PLAN_PHASE_NAME': phase.get('name') if isinstance(phase.get('name'), str) else f'phase {phase_s or 1}',
   'PLAN_PHASE_BRANCH': phase.get('branch') if isinstance(phase.get('branch'), str) else '',
-  'PLAN_BACKEND': scalar('backend'), 'PLAN_MODEL': scalar('model'),
+  'PLAN_BACKEND': scalar('backend'), 'PLAN_MODEL': scalar('model'), 'PLAN_REVISION': scalar('revision'),
   'PLAN_BRANCH': scalar('branch'), 'PLAN_NOTIFY': scalar('notify'), 'PLAN_BASE': scalar('base'),
   'PLAN_PROJECT': scalar('project'), 'PLAN_SETUP': scalar('setup'),
   'B_REVIEW': bget('review'), 'B_REVISE': bget('revise'), 'B_RUN': bget('run'),
@@ -250,6 +294,16 @@ eval "$plan_vars"
 PLAN_BRIEFS=()
 for i in $(seq 0 $((PLAN_BRIEF_COUNT-1))); do eval "PLAN_BRIEFS+=(\"\$PLAN_BRIEF_$i\")"; done
 [ "$PLAN_BRIEF_COUNT" -gt 0 ] || die "phase $((PLAN_PHASE_IDX+1)) of the plan lists no briefs"
+if [ "$PUBLICATION_OWNER_SET" -eq 0 ]; then
+  RECORDED_PUBLICATION_OWNER="$(recorded_publication_owner)" || die "could not read recorded publication owner"
+  if [ -n "$RECORDED_PUBLICATION_OWNER" ]; then
+    case "$RECORDED_PUBLICATION_OWNER" in
+      runner|supervisor) PUBLICATION_OWNER="$RECORDED_PUBLICATION_OWNER" ;;
+      *) die "invalid recorded publication owner; refusing to continue: $RECORDED_PUBLICATION_OWNER" ;;
+    esac
+  fi
+fi
+PUBLICATION_OWNER_FLAGS=(--publication-owner "$PUBLICATION_OWNER")
 
 # The plan's backend is the default, --backend overrides. Never auto-detected.
 # A model is passed to the loop only when set: the loop forwards it to EVERY stage.
@@ -259,6 +313,7 @@ case "$BACKEND" in claude|hermes|devin) ;; *) die "bad backend: $BACKEND (claude
 [ -n "$MODEL_ARG" ] || MODEL_ARG="$PLAN_MODEL"
 MODEL_FLAGS=(); [ -n "$MODEL_ARG" ] && MODEL_FLAGS=(--model "$MODEL_ARG")
 WANT_BRANCH="${PLAN_PHASE_BRANCH:-$PLAN_BRANCH}"
+MERGE_HELPER="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-merge.py"
 
 # The phase's repo: every brief of a phase works in one repo (one branch per plan).
 REPO=""
@@ -307,6 +362,129 @@ except BaseException:
     raise
 PY
   log_event "plan orchestration -> $1"
+}
+set_final_reviewed_head() {  # $1 = full head SHA bound by the final review
+  python3 - "$PLAN" "$1" "$(date +%F)" <<'PY'
+import io, os, stat, sys
+path, head, today = sys.argv[1:4]
+lines = io.open(path, encoding='utf-8').read().split('\n')
+end = next(i for i, line in enumerate(lines[1:], 1) if line.strip() == '---')
+seen = False
+for i in range(1, end):
+    if lines[i].startswith('final-reviewed-head:'):
+        lines[i] = f'final-reviewed-head: {head}'; seen = True
+    elif lines[i].startswith('updated:'):
+        lines[i] = f'updated: {today}'
+if not seen: lines.insert(end, f'final-reviewed-head: {head}')
+real = os.path.realpath(path); tmp = f'{real}.tmp.{os.getpid()}'
+try:
+    with io.open(tmp, 'w', encoding='utf-8', newline='') as stream: stream.write('\n'.join(lines))
+    os.chmod(tmp, stat.S_IMODE(os.stat(real).st_mode)); os.replace(tmp, real)
+except BaseException:
+    try: os.unlink(tmp)
+    except OSError: pass
+    raise
+PY
+}
+github_repo_slug() {
+  git -C "$REPO" config --get remote.origin.url 2>/dev/null | python3 -c 'import re,sys,urllib.parse
+u=sys.stdin.read().strip(); p=urllib.parse.urlsplit(u)
+if p.hostname and p.hostname.lower() == "github.com": path=p.path.strip("/")
+else:
+    m=re.fullmatch(r"(?:[^@/]+@)?github\.com:(.+)", u)
+    if not m: sys.exit(1)
+    path=m.group(1).strip("/")
+if path.endswith(".git"): path=path[:-4]
+parts=path.split("/")
+if len(parts) != 2 or not all(re.fullmatch(r"[A-Za-z0-9_-]+", x) for x in parts): sys.exit(1)
+print("/".join(parts))'
+}
+disclosure_forge() {
+  if github_repo_slug >/dev/null 2>&1; then echo github
+  elif git -C "$REPO" config --get remote.origin.url 2>/dev/null | /usr/bin/grep -qi 'gitlab'; then echo gitlab
+  else echo other; fi
+}
+merge_disclosure() {  # read-only disclosure; a failure cannot block an otherwise valid start
+  local forge details configured risk reason override effective consequence task line helper
+  forge="$(disclosure_forge)"; task="$(readlink -f "$PLAN")"
+  helper="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-merge.py"
+  details="$(python3 - "$HOME/.config/handoff/project-policy.json" "$REPO" "$task" "$PLAN_REVISION" <<'PY'
+import json, pathlib, sys
+path, repo, task, revision = sys.argv[1:]
+try: data=json.loads(pathlib.Path(path).read_text(encoding='utf-8'))
+except (OSError, ValueError): data={}
+entry=data.get('repositories', {}).get(repo, {}) if isinstance(data, dict) else {}
+enabled=entry.get('enabled') if isinstance(entry, dict) else None
+policy='auto' if enabled is True else ('manual' if enabled is False else 'unconfigured')
+assessments=entry.get('assessments', []) if isinstance(entry, dict) else []
+a=next((x for x in assessments if isinstance(x, dict) and x.get('task')==task and x.get('revision')==revision), None) if revision else None
+risk=a.get('risk','none') if a else 'none'
+reason=a.get('reason','none') if a else 'none'
+overrides=entry.get('overrides', []) if isinstance(entry, dict) else []
+approved=bool(a and {'task':task,'revision':revision,'risk':risk} in overrides)
+print('|'.join((policy, risk, reason.replace('|','/'), 'yes' if approved else 'no')))
+PY
+  )" || details='unconfigured|none|none|no'
+  IFS='|' read -r configured risk reason override <<<"$details"
+  if [ -z "$PLAN_REVISION" ]; then effective='manual — no plan revision'
+  else
+    effective="$(python3 "$helper" effective --repo "$REPO" --task "$task" --revision "$PLAN_REVISION" 2>/dev/null || true)"
+    [ -n "$effective" ] || effective='manual — policy decision unavailable'
+  fi
+  if [ "$forge" != github ] || [ "$configured" != auto ]; then consequence='manual: unchanged behaviour'
+  elif [ "$effective" = auto ] && [ "$BASE_BRANCH" != dev ]; then
+    effective="manual — auto-merge only targets dev (base $BASE_BRANCH)"
+    consequence="manual: the plan ends at its PR; this repository's sequence waits for your merge"
+  elif [ "$effective" = auto ]; then consequence="auto: on whole-feature final-review PASS the kit squash-merges into $BASE_BRANCH"
+  else
+    consequence="manual: the plan ends at its PR; this repository's sequence waits for your merge"
+    if [ "$effective" = 'manual — no risk assessment' ]; then
+      consequence="$consequence; assess with handoff-policy assess --repo $REPO --task $task --revision $PLAN_REVISION --risk ordinary --reason <reason>"
+    fi
+  fi
+  line="MERGE POLICY repository-policy=$configured forge=$forge risk=$risk reason=$reason override=$override effective=$effective consequence=$consequence"
+  log_event "$line"
+  printf '%s\n' "$line"
+}
+resume_awaiting_merge() {
+  local slug reviewed out rc kind first second merge_helper
+  slug="$(github_repo_slug)" || die "merge verification requires a GitHub origin URL"
+  reviewed="$(fm_scalar "$PLAN" final-reviewed-head)"
+  [[ "$reviewed" =~ ^[0-9a-fA-F]{40}$ ]] || die "awaiting-merge plan has no valid final-reviewed-head"
+  merge_helper="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-merge.py"
+  out="$(python3 "$merge_helper" merge-state --repository "$slug" --branch "$WANT_BRANCH" --base "$BASE_BRANCH" 2>&1)" || {
+    printf 'still awaiting merge into %s: %s\n' "$BASE_BRANCH" "${out##*$'\n'}" >&2
+    exit 1
+  }
+  read -r kind first second <<<"$out"
+  case "$kind" in
+    merged)
+      if [ "$second" != "$reviewed" ]; then
+        printf 'still awaiting merge into %s: reviewed head %s does not match PR head %s\n' "$BASE_BRANCH" "${reviewed:0:7}" "${second:0:7}" >&2
+        exit 1
+      fi
+      log_event "MERGE VERIFIED ${first:0:7} into $BASE_BRANCH"
+      set_plan_orch done
+      local clf; clf="$(checkout_lock_path 2>/dev/null)" || clf=""
+      if [ -n "$clf" ] && [ -f "$clf" ] && [ "$(head -1 "$clf")" = "$(readlink -f "$PLAN")" ]; then rm -f "$clf"; fi
+      write_status "DONE · merge ${first:0:7} verified into $BASE_BRANCH · $(ts "$(now_s)")" "$(phase_summary)"
+      retire_watchdog
+      notify "DONE · merge ${first:0:7} verified into $BASE_BRANCH"
+      echo "merge verified: ${first:0:7} into $BASE_BRANCH"
+      ;;
+    open)
+      printf 'still awaiting merge into %s: PR #%s remains open (%s)\n' "$BASE_BRANCH" "$first" "${second:0:7}" >&2
+      exit 1
+      ;;
+    absent)
+      printf 'still awaiting merge into %s: no matching PR was found\n' "$BASE_BRANCH" >&2
+      exit 1
+      ;;
+    *)
+      printf 'still awaiting merge into %s: invalid merge-state response\n' "$BASE_BRANCH" >&2
+      exit 1
+      ;;
+  esac
 }
 set_phase_status() {  # $1 = pending|running|done|broken, on phases[PLAN_PHASE_IDX]
   python3 - "$PLAN" "$PLAN_PHASE_IDX" "$1" <<'PY'
@@ -377,7 +555,7 @@ checkout_held_by_other() {  # $1 = lock file
   holder="$(head -1 "$1")"; self="$(readlink -f "$PLAN")"
   [ -n "$holder" ] && [ "$holder" != "$self" ] && [ -f "$holder" ] || return 0
   st="$(fm_scalar "$holder" orchestration)"; st="${st%% *}"
-  case "$st" in running|paused|broken) ;; *) return 0 ;; esac
+  case "$st" in running|paused|broken|awaiting-merge) ;; *) return 0 ;; esac
   printf 'preflight:checkout — %s is held by %s (orchestration: %s). Give this plan its own checkout:\n' "$REPO" "$holder" "$st"
   checkout_remedy
   printf "(or change the holder's orchestration: in its plan file if it is finished)"
@@ -624,7 +802,7 @@ preflight() {  # $1 = brief
   # 4. branch / tree ⊆ baseline / level with origin
   reason="$(tree_check)" || { printf '%s\n' "$reason"; return 1; }
   # 5. the launcher resolves this brief (intact argv, a known first stage)
-  if ! bash "$LAUNCHER" loop "$brief" --gate auto --backend "$BACKEND" "${MODEL_FLAGS[@]}" --dry-run >/dev/null 2>&1; then
+  if ! bash "$LAUNCHER" loop "$brief" --gate auto --backend "$BACKEND" "${MODEL_FLAGS[@]}" "${PUBLICATION_OWNER_FLAGS[@]}" --dry-run >/dev/null 2>&1; then
     printf 'preflight:dry-run — handoff-launch.sh loop --dry-run failed for %s\n' "$(basename "$brief")"; return 1
   fi
   # 6. a state the loop can start from
@@ -694,7 +872,7 @@ notify() {  # $1 = message. Loud for NEEDS YOU / PAUSED, silent otherwise.
   token="$(/usr/bin/grep -E '^TELEGRAM_BOT_TOKEN=' "$env" | cut -d= -f2- | tr -d '"'"'")"
   chat="$(/usr/bin/grep -E '^TELEGRAM_CHAT_ID=' "$env" | cut -d= -f2- | tr -d '"'"'")"
   [ -n "$token" ] && [ -n "$chat" ] || { echo "notify: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing in $env" >&2; return 0; }
-  case "$1" in NEEDS\ YOU*|PAUSED*) dn=false ;; esac
+  case "$1" in NEEDS\ YOU*|PAUSED*|AWAITING\ MERGE*) dn=false ;; esac
   curl -fsS -m 20 -X POST "https://api.telegram.org/bot${token}/sendMessage" \
     --data-urlencode "chat_id=$chat" --data-urlencode "text=$1
 $PLAN_ARG" --data-urlencode "disable_notification=$dn" >/dev/null 2>&1 \
@@ -949,8 +1127,8 @@ break_phase() {  # $1 = reason "kind:field — detail"; $2 = brief
   release_lock
   section=""
   [ -n "$wf" ] && section="### What failed · ${wf%%$'\n'*}"$'\n\n'"$(printf '%s\n' "$wf" | tail -n +2)"$'\n\n'
-  write_status "NEEDS YOU · broken at $where · $reason" "$(printf '## Break\n\n%s\n\n%sBrief: `%s` (handoff: %s). Fix by hand, then exactly one command:\n\n```bash\nhandoff-orchestrate resume %s --backend %s%s\n```' \
-    "$reason" "$section" "${brief:-—}" "$([ -n "$brief" ] && read_brief_state "$brief" || echo —)" "$PLAN_ARG" "$BACKEND" "${MODEL_ARG:+ --model $MODEL_ARG}")"
+  write_status "NEEDS YOU · broken at $where · $reason" "$(printf '## Break\n\n%s\n\n%sBrief: `%s` (handoff: %s). Fix by hand, then exactly one command:\n\n```bash\nhandoff-orchestrate resume %s --backend %s%s --publication-owner %s\n```' \
+    "$reason" "$section" "${brief:-—}" "$([ -n "$brief" ] && read_brief_state "$brief" || echo —)" "$PLAN_ARG" "$BACKEND" "${MODEL_ARG:+ --model $MODEL_ARG}" "$PUBLICATION_OWNER")"
   notify "NEEDS YOU · $PLAN_PHASE_NAME · broken at $where · $reason$([ -n "$wf" ] && printf '\n%s' "$wf")"
   printf 'BREAK: %s\n' "$reason" >&2
   exit 0
@@ -1142,7 +1320,7 @@ launch_driver() {
   cp "$KIT/handoff-launch.sh" "$driver_dir/handoff-launch.sh"
   cp "$KIT/handoff-orchestrate.sh" "$driver_dir/handoff-orchestrate.sh"
   in_new_session env VAULT="$VAULT" HANDOFF_KIT="$KIT" HANDOFF_DEFAULTS="$HANDOFF_DEFAULTS" HANDOFF_PROJECTS="$HANDOFF_PROJECTS" HANDOFF_LAUNCHER="$driver_dir/handoff-launch.sh" \
-    bash "$driver_dir/handoff-orchestrate.sh" __driver "$PLAN_ARG" --backend "$BACKEND" "${MODEL_FLAGS[@]}" \
+    bash "$driver_dir/handoff-orchestrate.sh" __driver "$PLAN_ARG" --backend "$BACKEND" "${MODEL_FLAGS[@]}" "${PUBLICATION_OWNER_FLAGS[@]}" \
     >"$DRIVER_LOG" 2>&1 </dev/null &
   local dpid=$!
   write_lock "$dpid"   # the driver's pid, not this shell's: the tick watches the driver
@@ -1156,7 +1334,7 @@ run_loop() {  # $1 = brief. Runs one loop in its own process group; sets LOOP_RC
   cap="$(mktemp)"
   set +e
   # HANDOFF_BASE: a pre-existing failure is proven against the plan's base, not a guess
-  HANDOFF_BASE="$BASE_BRANCH" in_new_session bash "$LAUNCHER" loop "$1" --gate auto --backend "$BACKEND" "${MODEL_FLAGS[@]}" >"$cap" 2>&1 </dev/null &
+  HANDOFF_BASE="$BASE_BRANCH" in_new_session bash "$LAUNCHER" loop "$1" --gate auto --backend "$BACKEND" "${MODEL_FLAGS[@]}" "${PUBLICATION_OWNER_FLAGS[@]}" >"$cap" 2>&1 </dev/null &
   pid=$!
   write_stage "$1" "$pid"
   wait "$pid"; LOOP_RC=$?
@@ -1234,7 +1412,11 @@ driver() {
       if [ "$LOOP_RC" -eq 0 ]; then
         # the post-run tree check is the orchestrator's, from git
         reason="$(tree_check)" || break_phase "run:tree — ${reason#preflight:tree — }" "$brief"
-        push_branch "$brief"; ensure_pr "$brief"     # backstop
+        if [ "$PUBLICATION_OWNER" = "runner" ]; then
+          push_branch "$brief"; ensure_pr "$brief"     # runner-owned backstop
+        else
+          log_event "PUBLICATION held for supervisor after $(basename "$brief" .md)"
+        fi
         log_event "BRIEF CLOSED $(basename "$brief" .md)"
         write_status "RUNNING · phase $((PLAN_PHASE_IDX+1))/$PLAN_PHASE_COUNT · brief $(brief_pos "$brief")/$PLAN_BRIEF_COUNT $(basename "$brief" .md) · closed"
         notify "phase $((PLAN_PHASE_IDX+1)) · $(basename "$brief" .md) closed ($(brief_pos "$brief")/$PLAN_BRIEF_COUNT)"
@@ -1289,7 +1471,52 @@ phase_done() {
   log_event "PHASE DONE $((PLAN_PHASE_IDX+1)) — $PLAN_PHASE_NAME"
   # the last phase closes the plan: `done`, not `phase-done` (the status skill's
   # "review and merge the PR" step keys on it)
-  if [ $((PLAN_PHASE_IDX+1)) -ge "$PLAN_PHASE_COUNT" ]; then set_plan_orch done; else set_plan_orch phase-done; fi
+  if [ $((PLAN_PHASE_IDX+1)) -ge "$PLAN_PHASE_COUNT" ]; then
+    merge_helper="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-merge.py"
+    merge_policy="$(python3 "$merge_helper" policy-get --repo "$REPO" 2>/dev/null || true)"
+    if [ "$merge_policy" = "auto" ] && [ "$(repo_forge)" = github ]; then
+      review_head="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
+      base_ref="origin/$BASE_BRANCH"
+      review_base="$(git -C "$REPO" merge-base HEAD "$base_ref" 2>/dev/null || true)"
+      if [ -z "$review_base" ]; then
+        log_event "FINAL REVIEW FAIL ${review_head:0:7} — base unavailable: $base_ref"
+        break_phase "final-review — base unavailable: $base_ref" "${PLAN_BRIEFS[-1]}"
+      else
+        review_out=""
+        review_rc=0
+        review_launcher="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-launch.sh"
+        if [ "$PUBLICATION_OWNER" = "supervisor" ]; then
+          review_out="$(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN bash "$review_launcher" final-review "$PLAN" --head "$review_head" --base "$review_base" --backend "$BACKEND" 2>&1)" || review_rc=$?
+        else
+          review_out="$(bash "$review_launcher" final-review "$PLAN" --head "$review_head" --base "$review_base" --backend "$BACKEND" 2>&1)" || review_rc=$?
+        fi
+        if [ "$review_rc" -eq 0 ]; then
+          log_event "FINAL REVIEW PASS ${review_head:0:7}"
+        else
+          review_reason="$(printf '%s\n' "$review_out" | tail -1 | sed 's/^.* — //')"
+          log_event "FINAL REVIEW FAIL ${review_head:0:7} — ${review_reason:-reviewer failed}"
+          break_phase "final-review — ${review_reason:-reviewer failed}" "${PLAN_BRIEFS[-1]}"
+        fi
+      fi
+      before_awaiting_merge
+      set_final_reviewed_head "$review_head"
+      if [ "$BASE_BRANCH" != dev ]; then
+        reason="auto-merge only targets dev; base is $BASE_BRANCH"
+        # Event and status first: the plan state is the commit point readers poll.
+        log_event "AWAITING MERGE ${review_head:0:7} — $reason"
+        write_status "AWAITING MERGE · final review PASS ${review_head:0:7} · merge into $BASE_BRANCH not attempted · $(ts "$(now_s)")" "$(printf 'PR: %s' "$(pr_url)")"
+        set_plan_orch awaiting-merge; set_phase_status done; release_lock
+        notify "AWAITING MERGE · final review PASS ${review_head:0:7} · $reason"
+        echo "awaiting merge into $BASE_BRANCH: $reason"
+        return 0
+      fi
+      auto_finalize "$merge_helper" "$review_head"
+      return 0
+    fi
+    set_plan_orch done
+  else
+    set_plan_orch phase-done
+  fi
   set_phase_status done
   release_lock
   # the plan is finished with its checkout: drop the checkout lock, only if it is ours
@@ -1300,6 +1527,58 @@ phase_done() {
   notify "DONE · phase $((PLAN_PHASE_IDX+1))/$PLAN_PHASE_COUNT · $PLAN_PHASE_NAME · $PLAN_BRIEF_COUNT briefs closed"
   echo "phase $((PLAN_PHASE_IDX+1)) complete"
 }
+
+auto_finalize() {  # $1 = merge helper, $2 = reviewed head
+  local helper="$1" reviewed="$2" slug out rc merge_sha cleanup reason cleanup_event clf
+  slug="$(github_repo_slug)" || slug=""
+  if [ -z "$slug" ]; then
+    rc=1; out="finalize refused: GitHub repository identity unavailable"
+  elif [ -z "${GH_TOKEN:-}" ] || [ -z "${GH_HOST:-}" ]; then
+    rc=1; out="finalize refused: GH_TOKEN and GH_HOST are required"
+  else
+    if out="$(python3 "$helper" finalize --repository "$slug" --plan "$PLAN" --branch "$WANT_BRANCH" --base "$BASE_BRANCH" 2>&1)"; then rc=0; else rc=$?; fi
+  fi
+  case "$rc" in
+    0|4)
+      merge_sha="$(printf '%s\n' "$out" | /usr/bin/grep -E '^merge-sha: [0-9a-fA-F]{40}$' | tail -1 | cut -d' ' -f2 || true)"
+      cleanup="$(printf '%s\n' "$out" | /usr/bin/grep -E '^branch-cleanup: (deleted|preserved|already-deleted|failed)$' | tail -1 | cut -d' ' -f2 || true)"
+      if ! [[ "$merge_sha" =~ ^[0-9a-fA-F]{40}$ ]] || { [ "$rc" -eq 0 ] && [ "$cleanup" = failed ]; } || { [ "$rc" -eq 4 ] && [ "$cleanup" != failed ]; }; then
+        rc=3
+      else
+        case "$cleanup" in
+          deleted) cleanup_event="branch cleaned" ;;
+          already-deleted) cleanup_event="branch cleaned (already deleted)" ;;
+          preserved) cleanup_event="branch preserved" ;;
+          failed) reason="$(printf '%s\n' "$out" | /usr/bin/grep '^handoff-merge:' | tail -1 | sed 's/^handoff-merge: //; s/^merged, cleanup failed: //')"; cleanup_event="cleanup failed — ${reason:-reason unavailable}" ;;
+        esac
+        log_event "MERGED ${merge_sha:0:7} into $BASE_BRANCH — verified"
+        if [ "$cleanup" = failed ]; then log_event "$cleanup_event; leftover branch $WANT_BRANCH"; else log_event "$cleanup_event"; fi
+        set_plan_orch done; set_phase_status done; release_lock
+        clf="$(checkout_lock_path 2>/dev/null)" || clf=""
+        if [ -n "$clf" ] && [ -f "$clf" ] && [ "$(head -1 "$clf")" = "$(readlink -f "$PLAN")" ]; then rm -f "$clf"; fi
+        write_status "DONE · merged into $BASE_BRANCH · $(ts "$(now_s)")" "$(phase_summary)"
+        retire_watchdog
+        if [ "$cleanup" = failed ]; then notify "DONE · merged ${merge_sha:0:7} into $BASE_BRANCH — $cleanup_event; leftover branch $WANT_BRANCH"; else notify "DONE · merged ${merge_sha:0:7} into $BASE_BRANCH — $cleanup_event"; fi
+        echo "merged and verified: ${merge_sha:0:7} into $BASE_BRANCH"
+        [ "$rc" -eq 0 ] && return 0
+        return 0
+      fi
+      ;;
+  esac
+  case "$rc" in
+    1) reason="$(printf '%s\n' "$out" | tail -1 | sed 's/^handoff-merge: //')"; reason="auto-merge refused — ${reason:-reason unavailable}" ;;
+    *) reason="merge outcome ambiguous — verify before resuming" ;;
+  esac
+  # Event and status first: the plan state is the commit point readers poll.
+  log_event "AWAITING MERGE ${reviewed:0:7} — $reason"
+  write_status "AWAITING MERGE · final review PASS ${reviewed:0:7} · merge into $BASE_BRANCH not yet verified · $(ts "$(now_s)")" "$(printf 'PR: %s' "$(pr_url)")"
+  set_plan_orch awaiting-merge; set_phase_status done; release_lock
+  notify "AWAITING MERGE · final review PASS ${reviewed:0:7} · $reason"
+  echo "awaiting merge into $BASE_BRANCH: $reason"
+}
+
+# Step 3 inserts the automatic merge attempt here before the held state is recorded.
+before_awaiting_merge() { :; }
 
 # ---------------------------------------------------------------- start / resume
 # The plan branch is the orchestrator's to set up, not the human's (2026-09-24: the operator was
@@ -1323,15 +1602,24 @@ ensure_branch() {
   else
     git -C "$REPO" rev-parse --verify -q "origin/$BASE_BRANCH" >/dev/null 2>&1 || die2 "preflight:branch — $WANT_BRANCH exists nowhere and origin/$BASE_BRANCH (the base to cut it from) is missing"
     out="$(git -C "$REPO" checkout -q -b "$WANT_BRANCH" "origin/$BASE_BRANCH" 2>&1)" || die2 "preflight:branch — could not create $WANT_BRANCH from origin/$BASE_BRANCH: $(printf '%s' "$out" | tail -1)"
-    if out="$(git -C "$REPO" push -q -u origin "$WANT_BRANCH" 2>&1)"; then
-      log_event "BRANCH created $WANT_BRANCH from origin/$BASE_BRANCH and pushed (repo was on ${cur:-<detached>})"
+    if [ "$PUBLICATION_OWNER" = "runner" ]; then
+      if out="$(git -C "$REPO" push -q -u origin "$WANT_BRANCH" 2>&1)"; then
+        log_event "BRANCH created $WANT_BRANCH from origin/$BASE_BRANCH and pushed (repo was on ${cur:-<detached>})"
+      else
+        log_event "BRANCH created $WANT_BRANCH from origin/$BASE_BRANCH; push failed, the backstop after brief 1 retries: $(printf '%s' "$out" | tail -1 | cut -c1-120)"
+      fi
     else
-      log_event "BRANCH created $WANT_BRANCH from origin/$BASE_BRANCH; push failed, the backstop after brief 1 retries: $(printf '%s' "$out" | tail -1 | cut -c1-120)"
+      log_event "BRANCH created local $WANT_BRANCH from origin/$BASE_BRANCH; publication owner supervisor"
     fi
   fi
 }
 
 begin() {  # $1 = START|RESUME
+  if [ "$PLAN_ORCH" = awaiting-merge ]; then
+    [ "$1" = RESUME ] || die "plan is awaiting merge; use resume to verify the merge"
+    resume_awaiting_merge
+    return 0
+  fi
   case "$PLAN_ORCH" in
     running) lock_alive && die "plan is running: $(cat "$LOCK")"; ;;   # stale `running` with no live driver: fall through
     phase-done|done) die "phase $((PLAN_PHASE_IDX+1)) is $PLAN_ORCH — /handoff-plan writes the next phase and resets orchestration: planned" ;;
@@ -1356,6 +1644,7 @@ begin() {  # $1 = START|RESUME
   # stage scan, HANDOFF_ORCH_ALLOW_CONCURRENT does not skip it.
   local reason clf
   reason="$(kit_check)" || die2 "$reason"
+  if [ "$1" = START ]; then merge_disclosure || true; fi
   # Lock the checkout before anything moves it: a refusal here leaves the branch, the
   # baseline and the plan untouched.
   clf="$(checkout_lock_path)" || die2 "preflight:repo — not a git checkout: $REPO"
@@ -1364,6 +1653,18 @@ begin() {  # $1 = START|RESUME
     reason="$(stage_scan)" || die2 "$reason"
   fi
   readlink -f "$PLAN" >"$clf" 2>/dev/null || die2 "preflight:checkout — could not write $clf"
+  if [ "$1" = START ]; then
+    git -C "$REPO" fetch -q origin 2>/dev/null || true
+    if [ "$BASE_BRANCH" = dev ] && [ "$(disclosure_forge)" = github ] \
+       && [ "$(python3 "$MERGE_HELPER" policy-get --repo "$REPO" 2>/dev/null || true)" = auto ] \
+       && ! git -C "$REPO" rev-parse --verify -q origin/dev >/dev/null 2>&1; then
+      slug="$(github_repo_slug)" || die2 "preflight:dev-bootstrap — GitHub repository identity unavailable"
+      out="$(python3 "$MERGE_HELPER" dev-bootstrap --repository "$slug" 2>&1)" || die2 "preflight:dev-bootstrap — ${out##*$'\n'}"
+      git -C "$REPO" fetch -q origin 2>/dev/null || die2 "preflight:dev-bootstrap — created dev but could not fetch origin"
+      git -C "$REPO" rev-parse --verify -q origin/dev >/dev/null 2>&1 \
+        || die2 "preflight:dev-bootstrap — dev bootstrap succeeded but origin/dev is still missing"
+    fi
+  fi
   ensure_branch
   record_baseline
   reason="$(notify_check)" || { rm -f "$BASELINE"; die2 "$reason"; }
@@ -1372,7 +1673,7 @@ begin() {  # $1 = START|RESUME
      && ! git -C "$REPO" merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD 2>/dev/null; then
     log_event "NOTE base — origin/$BASE_BRANCH has commits $WANT_BRANCH lacks; the run's sync step merges $BASE_BRANCH in before its PR update"
   fi
-  log_event "$1 backend=$BACKEND model=${MODEL_ARG:-<stage defaults>} from $(basename "$first" .md) (handoff: $(read_brief_state "$first")) · baseline $(awk '$1=="head"{print substr($2,1,7)}' "$BASELINE") on $WANT_BRANCH, $(/usr/bin/grep -c '^dirty ' "$BASELINE" || true) dirty paths"
+  log_event "$1 backend=$BACKEND model=${MODEL_ARG:-<stage defaults>} publication-owner=$PUBLICATION_OWNER from $(basename "$first" .md) (handoff: $(read_brief_state "$first")) · baseline $(awk '$1=="head"{print substr($2,1,7)}' "$BASELINE") on $WANT_BRANCH, $(/usr/bin/grep -c '^dirty ' "$BASELINE" || true) dirty paths"
   launch_driver
   arm_watchdog
 }
@@ -1391,13 +1692,13 @@ stop() {
   fi
   set_plan_orch paused
   release_lock
-  write_status "PAUSED · stopped by hand at $(ts "$(now_s)") · resume: handoff-orchestrate resume $PLAN_ARG --backend $BACKEND"
+  write_status "PAUSED · stopped by hand at $(ts "$(now_s)") · resume: handoff-orchestrate resume $PLAN_ARG --backend $BACKEND --publication-owner $PUBLICATION_OWNER"
   echo "stopped driver $pid; orchestration: paused. Briefs are as the launcher left them."
   if [ -n "$sb" ] && [ "$(read_brief_state "$sb")" = "running" ]; then
     echo "NOTE: $(basename "$sb") is handoff: running — a run was killed mid-way. resume will refuse it until a human"
     echo "      sorts the repo out and sets the brief to ready (re-run) or closed (/debrief reconstructs a dead run)."
   fi
-  echo "resume: handoff-orchestrate resume $PLAN_ARG --backend $BACKEND${MODEL_ARG:+ --model $MODEL_ARG}"
+  echo "resume: handoff-orchestrate resume $PLAN_ARG --backend $BACKEND${MODEL_ARG:+ --model $MODEL_ARG} --publication-owner $PUBLICATION_OWNER"
 }
 
 # ---------------------------------------------------------------- tick
@@ -1418,7 +1719,7 @@ tick() {
     log_event "TICK driver $pid dead with the lock held — watchdog:driver"
     set_plan_orch broken; set_phase_status broken
     release_lock
-    write_status "NEEDS YOU · watchdog:driver — driver $pid died mid-phase" "$(printf '## Break\n\nThe driver process is gone but the phase is not done. Read `%s`, then:\n\n```bash\nhandoff-orchestrate resume %s --backend %s\n```' "$DRIVER_LOG" "$PLAN_ARG" "$BACKEND")"
+    write_status "NEEDS YOU · watchdog:driver — driver $pid died mid-phase" "$(printf '## Break\n\nThe driver process is gone but the phase is not done. Read `%s`, then:\n\n```bash\nhandoff-orchestrate resume %s --backend %s --publication-owner %s\n```' "$DRIVER_LOG" "$PLAN_ARG" "$BACKEND" "$PUBLICATION_OWNER")"
     notify "NEEDS YOU · watchdog:driver — driver $pid died mid-phase"
     exit 0
   fi

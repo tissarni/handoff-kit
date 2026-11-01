@@ -33,7 +33,7 @@ if ep.endswith('/pulls/7') and method=='GET':
  if c.get('readback_error') and c.get('patched'): print('HTTP 500',file=sys.stderr); sys.exit(1)
  if c.get('readback_invalid') and c.get('patched'): print('{invalid'); sys.exit(0)
  body=c.get('readback_body') if c.get('patched') and 'readback_body' in c else c.get('body','')
- print(json.dumps({'state':'open','body':body,'head':row['head'],'base':row['base']})); sys.exit(0)
+ print(json.dumps({'state':c.get('get_state','open'),'body':body,'head':dict(row['head'],sha=c.get('get_head',row['head']['sha'])),'base':row['base']})); sys.exit(0)
 if ep.endswith('/pulls/7') and method=='PATCH':
  c['patches']=c.get('patches',0)+1; c['patched']=True
  body=next((x[5:] for x in a if x.startswith('body=')),None)
@@ -104,8 +104,9 @@ for label,cfg,match in [
  else: p,calls=run(label,cfg,3 if label.startswith(('readback','patch')) else 1,match,1 if label.startswith(('readback','patch')) else 0); continue
  assert p.returncode==1 and match in p.stderr, f'{label}: {p.returncode} {p.stdout} {p.stderr}'
  assert not any(x.split(' ',1)[0] in ('PATCH','PUT','POST','DELETE') for x in calls)
-# Candidate identity must also match on the re-fetch before the write.
-ctl.write_text(json.dumps({'body':'x','list_head':head,'head_repo':'acme/widget'})); log.write_text('')
+# The single-PR re-fetch must still match the listed candidate before the write.
+run('head moved on re-fetch',{'body':'x','get_head':'e'*40},1,'pull request identity changed',0)
+run('closed on re-fetch',{'body':'x','get_state':'closed'},1,'pull request identity changed',0)
 # A valid reviewed merged PR is reconciled without writing.
 run('already merged',{'merged':True,'body':'x'},0,'pr-body: already merged',0)
 print('pr-body: managed block, evidence, candidate selection, refusal, write, and verification cases passed')

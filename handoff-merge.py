@@ -352,7 +352,7 @@ def _pr_body_sections(body: str) -> dict[str, list[str]]:
     return sections
 
 
-def _plan_pr_body(plan: str, revision: str, risk: str, head: str, base: str) -> str:
+def _plan_pr_body(plan: str, risk: str, head: str, base: str) -> str:
     feature = Path(plan).expanduser().resolve()
     lines = feature.read_text(encoding="utf-8").splitlines()
     title = next((line[2:].strip() for line in lines if line.startswith("# ") and line[2:].strip()), feature.name)
@@ -470,7 +470,7 @@ def _pr_body(slug: str, plan: str, branch: str, base: str) -> None:
     body = pr.get("body")
     if not isinstance(body, str):
         body = ""
-    new_body = _managed_pr_body(body, _plan_pr_body(plan, "", risk, head, reviewed_base))
+    new_body = _managed_pr_body(body, _plan_pr_body(plan, risk, head, reviewed_base))
     try:
         _gh("PATCH", f"repos/{slug}/pulls/{number}", {"body": new_body})
     except Refusal as exc:

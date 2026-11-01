@@ -184,8 +184,10 @@ The PR body must have non-empty `## Feature`, `## Acceptance`, `## Final review`
 On an auto-policy orchestrated run against `dev`, the orchestrator calls
 `handoff-policy pr-body --repository <owner/name> --plan <plan> --branch <branch> [--base dev]`
 after final review and before `finalize` to write the managed sections from the plan and review evidence.
-`pr-body` rewrites the whole body from the copy fetched just before writing, so a concurrent edit
-to the PR body made between that fetch and the PATCH is lost.
+`pr-body` changes only the block between its `<!-- handoff:merge-sections -->` markers and keeps
+the rest of the body. It sends the whole body, built from the copy fetched just before writing, so
+a concurrent edit to the PR body made between that fetch and the PATCH is lost. A marker line
+counts wherever it appears, even inside a code fence; an unmatched or repeated marker is refused.
 
 Feature PRs stay drafts during implementation. Only after every merge check has passed
 (policy, evidence, identity, PR body and required CI on the exact head) does `finalize`

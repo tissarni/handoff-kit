@@ -41,13 +41,16 @@ log.open('a').write(method+' '+endpoint+'\n')
 head=d['head']; base=d['base']
 if endpoint.startswith('repos/test/repo/pulls?state=all&head=test:feat/test'):
  merged=bool(d.get('merged'))
+ if d.get('no_pr'): print('[]'); sys.exit(0)
  print(json.dumps([{'number':7,'state':'closed' if merged else 'open','merged_at':'2026-01-01T00:00:00Z' if merged else None,'merge_commit_sha':'c'*40 if merged else None,'head':{'ref':'feat/test','sha':head,'repo':{'full_name':'test/repo'}},'base':{'ref':'dev','sha':base,'repo':{'full_name':'test/repo'}}}]))
 elif endpoint.endswith('/pulls/7/merge') and method=='PUT':
  d['puts']=d.get('puts',0)+1; d['merged']=not bool(d.get('put_error')); state.write_text(json.dumps(d))
  if d.get('put_error'): print('HTTP 500',file=sys.stderr); sys.exit(1)
  print('{"merged":true}')
+elif endpoint.endswith('/pulls/7') and method=='PATCH':
+ d['body']=next(x[5:] for x in a if x.startswith('body=')); d['body_writes']=d.get('body_writes',0)+1; state.write_text(json.dumps(d)); print('{}'); sys.exit(0)
 elif endpoint.endswith('/pulls/7'):
- print(json.dumps({'number':7,'node_id':'PR_node','body':'## Feature\nfeature\n## Acceptance\naccept\n## Final review\n'+head+'\n## CI\nci\n## Limitations\nnone','state':'closed' if d.get('merged') else 'open','draft':False,'merged':bool(d.get('merged')),'merge_commit_sha':'c'*40 if d.get('merged') else None,'mergeable_state':'clean','base':{'ref':'dev','sha':base,'repo':{'full_name':'test/repo'}},'head':{'ref':'feat/test','sha':head,'repo':{'full_name':'test/repo'}}}))
+ print(json.dumps({'number':7,'node_id':'PR_node','body':d.get('body','Free-form PR description from the run.'),'state':'closed' if d.get('merged') else 'open','draft':False,'merged':bool(d.get('merged')),'merge_commit_sha':'c'*40 if d.get('merged') else None,'mergeable_state':'clean','base':{'ref':'dev','sha':base,'repo':{'full_name':'test/repo'}},'head':{'ref':'feat/test','sha':head,'repo':{'full_name':'test/repo'}}}))
 elif endpoint.endswith('/protection/required_status_checks'): print('{"contexts":["ci"],"checks":[]}')
 elif endpoint.endswith('/commits/'+head+'/status'): print('{"state":"success","statuses":[]}')
 elif '/check-runs' in endpoint:
@@ -127,6 +130,7 @@ if sys.argv[4]=='already': state.update(merged=True,deleted=True)
 elif sys.argv[4]=='failing-check': state['fail_check']=True
 elif sys.argv[4]=='ambiguous': state['put_error']=True
 elif sys.argv[4]=='cleanup-failure': state['delete_error']=True
+elif sys.argv[4]=='pr-body-refusal': state['no_pr']=True
 open(sys.argv[1],'w').write(json.dumps(state))
 PY
   if [ "$mode" = failing-check ] || [ "$mode" = ambiguous ] || [ "$mode" = cleanup-failure ]; then
@@ -151,9 +155,11 @@ runpy.run_path(sys.argv[0],run_name='__main__')
 PY
     chmod +x "$SANDBOX/kit/handoff-merge.py"
   fi
+
   : >"$SANDBOX/state/gh.log"
   _sbx_env
   env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com bash "$SANDBOX/kit/handoff-orchestrate.sh" start "$plan" --backend claude --publication-owner supervisor >/dev/null 2>&1
+
   printf '%s' "$plan"
 }
 event_seen() { /usr/bin/grep -qF -- "$2" "$1" 2>/dev/null; }
@@ -175,9 +181,25 @@ env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com bash "$SANDBOX/kit/hando
 assert_contains "${FAIL_CHECK_PLAN%.md}.events.log" 'MERGE VERIFIED'
 if /usr/bin/grep -E '^PUT ' "$SANDBOX/state/gh.log" >/dev/null; then fail "resume retried the merge PUT"; fi
 
+PR_BODY_FAILURE_PLAN="$(scenario_plan pr-body-refusal pr-body-refusal)" || fail "pr-body refusal scenario state was not ready before orchestration started"
+pr_body_held() { /usr/bin/grep -q '^orchestration: awaiting-merge' "$PR_BODY_FAILURE_PLAN" 2>/dev/null; }
+wait_for 90 pr_body_held || fail "pr-body refusal did not hold for manual recovery: $(head -1 "$PR_BODY_FAILURE_PLAN" 2>/dev/null); events=$(tail -5 "${PR_BODY_FAILURE_PLAN%.md}.events.log" 2>/dev/null); forge=$(cat "$SANDBOX/state/gh.log" 2>/dev/null)"
+wait_for 10 event_seen "${PR_BODY_FAILURE_PLAN%.md}.events.log" 'PR body not written — handoff-merge: pull request candidates: none' || fail "pr-body refusal event was not recorded"
+assert_contains "${PR_BODY_FAILURE_PLAN%.md}.events.log" 'PR body not written — handoff-merge: pull request candidates: none'
+assert_eq "$(/usr/bin/grep -c '^PUT ' "$SANDBOX/state/gh.log")" 0 "finalize merge PUT after pr-body refusal"
+assert_eq "$(/usr/bin/grep -c '^PATCH ' "$SANDBOX/state/gh.log")" 0 "PR body PATCH after refused helper"
+# The held plan keeps the checkout until a human merges; do that so later scenarios can start.
+python3 - "$SANDBOX/state/forge.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d.pop('no_pr',None); d['merged']=True; open(p,'w').write(json.dumps(d))
+PY
+_sbx_env
+env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com bash "$SANDBOX/kit/handoff-orchestrate.sh" resume "$PR_BODY_FAILURE_PLAN" --backend claude --publication-owner supervisor >/dev/null 2>&1
+/usr/bin/grep -q '^orchestration: done' "$PR_BODY_FAILURE_PLAN" || fail "human merge after pr-body refusal did not resume to done"
+
 AMBIGUOUS_PLAN="$(scenario_plan ambiguous-merge ambiguous)" || fail "ambiguous-merge scenario state was not ready before orchestration started"
 ambiguous_held() { /usr/bin/grep -q '^orchestration: awaiting-merge' "$AMBIGUOUS_PLAN" 2>/dev/null; }
-wait_for 90 ambiguous_held || fail "ambiguous merge did not hold for verification"
+wait_for 90 ambiguous_held || fail "ambiguous merge did not hold for verification: $(head -1 "$AMBIGUOUS_PLAN" 2>/dev/null); events=$(tail -5 "${AMBIGUOUS_PLAN%.md}.events.log" 2>/dev/null); forge=$(cat "$SANDBOX/state/gh.log" 2>/dev/null)"
 wait_for 10 event_seen "${AMBIGUOUS_PLAN%.md}.events.log" 'merge outcome ambiguous — verify before resuming' || fail "ambiguous-merge event was not recorded"
 assert_contains "${AMBIGUOUS_PLAN%.md}.events.log" 'merge outcome ambiguous — verify before resuming'
 assert_eq "$(/usr/bin/grep -c '^PUT ' "$SANDBOX/state/gh.log")" 1 "ambiguous merge PUT count"

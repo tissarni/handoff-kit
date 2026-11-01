@@ -90,7 +90,9 @@ for label,cfg,match in [
  ('readback invalid JSON',{'body':'x','readback_invalid':True},'pr-body written but not verified'),
 ]:
  if label=='base main':
-  p=subprocess.run(argv+['--base','main'],text=True,capture_output=True,env=runenv); calls=[]
+  ctl.write_text(json.dumps(cfg)); log.write_text('')
+  p=subprocess.run(argv+['--base','main'],text=True,capture_output=True,env=runenv); calls=log.read_text().splitlines()
+  assert calls==[], f'base main reached the forge: {calls}'
  elif label in ('invalid evidence','missing evidence','missing revision'):
   if label=='invalid evidence': evpath.write_text('{invalid')
   elif label=='missing evidence': evpath.unlink()

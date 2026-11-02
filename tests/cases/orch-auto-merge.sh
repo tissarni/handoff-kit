@@ -53,9 +53,14 @@ elif endpoint.endswith('/pulls/7'):
  print(json.dumps({'number':7,'node_id':'PR_node','body':d.get('body','Free-form PR description from the run.'),'state':'closed' if d.get('merged') else 'open','draft':False,'merged':bool(d.get('merged')),'merge_commit_sha':'c'*40 if d.get('merged') else None,'mergeable_state':'clean','base':{'ref':'dev','sha':base,'repo':{'full_name':'test/repo'}},'head':{'ref':'feat/test','sha':head,'repo':{'full_name':'test/repo'}}}))
 elif endpoint.endswith('/protection/required_status_checks'): print('{"contexts":["ci"],"checks":[]}')
 elif endpoint.endswith('/commits/'+head+'/status'): print('{"state":"success","statuses":[]}')
-elif '/check-runs' in endpoint:
+elif 'check-runs' in endpoint:
+ print('HTTP 404 check-runs must never be requested',file=sys.stderr); sys.exit(8)
+elif '/actions/runs/1/jobs' in endpoint:
  conclusion='failure' if d.get('fail_check') else 'success'
- print(json.dumps({'total_count':1,'check_runs':[{'name':'ci','status':'completed','conclusion':conclusion,'started_at':'2026-01-01T00:00:00Z','id':1}]}))
+ print(json.dumps([{'total_count':1,'jobs':[{'name':'ci','status':'completed','conclusion':conclusion,'started_at':'2026-01-01T00:00:00Z','id':11}]}]))
+elif '/actions/runs?head_sha='+head in endpoint:
+ conclusion='failure' if d.get('fail_check') else 'success'
+ print(json.dumps([{'total_count':1,'workflow_runs':[{'id':1,'workflow_id':1,'name':'wf','event':'push','head_sha':head,'status':'completed','conclusion':conclusion,'created_at':'2026-01-01T00:00:00Z'}]}]))
 elif endpoint.endswith('/git/ref/heads/feat/test'):
  if d.get('deleted'): print('HTTP 404',file=sys.stderr); sys.exit(1)
  print(json.dumps({'object':{'sha':head}}))

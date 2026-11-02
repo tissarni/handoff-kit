@@ -23,6 +23,8 @@ POLICIES = Path.home() / ".config" / "handoff" / "project-policy.json"
 VALID_RISKS = {"ordinary", "breaking-api", "destructive-migration", "auth-permissions-secrets",
                "deployment-infrastructure", "merge-policy", "uncertain"}
 PR_BODY_SECTIONS = ("Feature", "Acceptance", "Final review", "CI", "Limitations")
+PR_BODY_START = "<!-- handoff:merge-sections -->"
+PR_BODY_END = "<!-- /handoff:merge-sections -->"
 
 
 class Refusal(Exception):
@@ -338,6 +340,154 @@ def _review_evidence(plan: str) -> tuple[str, str, str, str, str, str]:
     return repo, str(feature), revision, record["risk"], record["head"].lower(), record["base"].lower()
 
 
+def _pr_body_sections(body: str) -> dict[str, list[str]]:
+    sections: dict[str, list[str]] = {}
+    current = None
+    for line in body.splitlines():
+        if line.startswith("## "):
+            current = line[3:].strip()
+            sections[current] = []
+        elif current is not None:
+            sections[current].append(line)
+    return sections
+
+
+def _plan_pr_body(plan: str, risk: str, head: str, base: str) -> str:
+    feature = Path(plan).expanduser().resolve()
+    lines = feature.read_text(encoding="utf-8").splitlines()
+    title = next((line[2:].strip() for line in lines if line.startswith("# ") and line[2:].strip()), feature.name)
+    goal = ""
+    for i, line in enumerate(lines):
+        if line.strip() == "## Goal":
+            paragraph = []
+            for item in lines[i + 1:]:
+                if not item.strip():
+                    if paragraph:
+                        break
+                    continue
+                if item.startswith("#"):
+                    break
+                paragraph.append(item.strip())
+            goal = " ".join(paragraph)
+            break
+    feature_text = title + (" — " + goal if goal else "")
+    fm_end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
+    if not lines or lines[0].strip() != "---" or fm_end is None:
+        raise Refusal("plan frontmatter is missing or unterminated")
+    in_phases = False
+    in_briefs = False
+    brief_names: list[str] = []
+    for raw in lines[1:fm_end]:
+        indent = len(raw) - len(raw.lstrip())
+        text = raw.strip()
+        if text == "phases:":
+            in_phases, in_briefs = True, False
+            continue
+        if in_phases and indent == 0 and text and not text.startswith("#"):
+            in_phases, in_briefs = False, False
+        if not in_phases:
+            continue
+        if indent <= 2 and re.match(r"^-\s+", text):
+            in_briefs = False
+        match = re.match(r"^briefs:\s*(.*)$", text)
+        if match:
+            in_briefs = True
+            value = match.group(1).strip()
+            if value.startswith("[") and value.endswith("]"):
+                brief_names.extend(x.strip().strip("\"'") for x in value[1:-1].split(",") if x.strip())
+            elif value:
+                brief_names.append(value.strip("\"'"))
+        elif in_briefs and indent >= 4 and text.startswith("-"):
+            brief_names.append(text[1:].strip().strip("\"'"))
+    if not brief_names:
+        raise Refusal("plan has no phase briefs")
+    acceptance = "Every brief of the plan closed and passed its run check:\n" + "\n".join(
+        "- " + Path(name).name for name in brief_names)
+    return ("## Feature\n" + feature_text + "\n\n## Acceptance\n" + acceptance +
+            "\n\n## Final review\nPASS — head " + head + ", base " + base + ", risk " + risk +
+            "\n\n## CI\nRequired checks on " + head +
+            " are verified by handoff-policy finalize before any merge; the merge is refused if one is missing or failing."+
+            "\n\n## Limitations\nFinal review PASS with no blockers; non-blocking limitations are not recorded in the final-review evidence.")
+
+
+def _managed_pr_body(body: str, block: str) -> str:
+    lines = body.splitlines(keepends=True)
+    markers = [(i, line.rstrip("\r\n")) for i, line in enumerate(lines)
+               if line.rstrip("\r\n") in (PR_BODY_START, PR_BODY_END)]
+    if not markers:
+        separator = "" if not body else ("" if body.endswith("\n\n") else "\n" if body.endswith("\n") else "\n\n")
+        return body + separator + PR_BODY_START + "\n" + block + "\n" + PR_BODY_END + "\n"
+    if (len(markers) != 2 or markers[0][1] != PR_BODY_START or markers[1][1] != PR_BODY_END):
+        raise Refusal("malformed managed block")
+    start, end = markers[0][0], markers[1][0]
+    replacement = PR_BODY_START + "\n" + block + "\n" + PR_BODY_END + ("\n" if lines[end].endswith("\n") else "")
+    return "".join(lines[:start]) + replacement + "".join(lines[end + 1:])
+
+
+def _pr_body(slug: str, plan: str, branch: str, base: str) -> None:
+    if base != "dev":
+        raise Refusal("automatic PR body writes only target dev")
+    _, _, _, risk, head, reviewed_base = _review_evidence(plan)
+    owner = slug.split("/", 1)[0]
+    rows = _gh("GET", f"repos/{slug}/pulls?state=all&head={owner}:{branch}", allow_list=True, paginate=True)
+    if not isinstance(rows, list):
+        raise Refusal("GitHub returned an invalid pull request list")
+    candidates = []
+    merged = []
+    for pr in rows:
+        if not isinstance(pr, dict):
+            continue
+        h, b = pr.get("head"), pr.get("base")
+        hr = h.get("repo") if isinstance(h, dict) else None
+        br = b.get("repo") if isinstance(b, dict) else None
+        if (isinstance(h, dict) and isinstance(b, dict) and isinstance(hr, dict) and isinstance(br, dict)
+                and str(hr.get("full_name", "")).lower() == slug.lower()
+                and str(br.get("full_name", "")).lower() == slug.lower()
+                and h.get("ref") == branch and h.get("sha") == head and b.get("ref") == base):
+            if pr.get("state") == "open":
+                candidates.append(pr)
+            elif pr.get("state") == "closed" and pr.get("merged_at") is not None:
+                merged.append(pr)
+    if not candidates and len(merged) == 1:
+        print(f"pr-body: already merged #{merged[0].get('number')}")
+        return
+    if len(candidates) != 1 or merged:
+        nums = [str(pr.get("number", "unknown")) for pr in candidates + merged]
+        raise Refusal("pull request candidates: " + (", ".join(nums) or "none"))
+    number = candidates[0].get("number")
+    if not isinstance(number, int) or isinstance(number, bool):
+        raise Refusal("pull request candidates: invalid number")
+    pr = _gh("GET", f"repos/{slug}/pulls/{number}")
+    h, b = pr.get("head"), pr.get("base")
+    hr = h.get("repo") if isinstance(h, dict) else None
+    br = b.get("repo") if isinstance(b, dict) else None
+    if (not isinstance(h, dict) or not isinstance(b, dict) or not isinstance(hr, dict) or not isinstance(br, dict)
+            or pr.get("state") != "open" or h.get("ref") != branch or h.get("sha") != head
+            or b.get("ref") != base or b.get("sha") != reviewed_base
+            or str(hr.get("full_name", "")).lower() != slug.lower()
+            or str(br.get("full_name", "")).lower() != slug.lower()):
+        raise Refusal("pull request identity changed")
+    body = pr.get("body")
+    if not isinstance(body, str):
+        body = ""
+    new_body = _managed_pr_body(body, _plan_pr_body(plan, risk, head, reviewed_base))
+    try:
+        _gh("PATCH", f"repos/{slug}/pulls/{number}", {"body": new_body})
+    except Refusal as exc:
+        raise FinalizeFailure(f"pr-body written but not verified — {exc}", 3) from exc
+    try:
+        readback = _gh("GET", f"repos/{slug}/pulls/{number}")
+        verified = readback.get("body")
+        sections = _pr_body_sections(verified) if isinstance(verified, str) else {}
+        for section in PR_BODY_SECTIONS:
+            content = "\n".join(sections.get(section, [])).strip()
+            if not content or (section == "Final review" and head not in content):
+                raise Refusal(f"incomplete PR body: {section}")
+    except Refusal as exc:
+        raise FinalizeFailure(f"pr-body written but not verified — {exc}", 3) from exc
+    print(f"pr-body: written #{number}")
+
+
 def _finalize_decision(slug: str, plan: str, branch: str, base: str) -> tuple[str, str, str, int, str, str, bool]:
     if base != "dev":
         raise Refusal("automatic merges only target dev")
@@ -433,15 +583,7 @@ def _finalize(slug: str, plan: str, branch: str, base: str) -> None:
         return
     pr = _gh("GET", f"repos/{slug}/pulls/{number}")
     body = pr.get("body")
-    sections: dict[str, list[str]] = {}
-    current = None
-    if isinstance(body, str):
-        for line in body.splitlines():
-            if line.startswith("## "):
-                current = line[3:].strip()
-                sections[current] = []
-            elif current is not None:
-                sections[current].append(line)
+    sections = _pr_body_sections(body) if isinstance(body, str) else {}
     for section in PR_BODY_SECTIONS:
         content = "\n".join(sections.get(section, [])).strip()
         if not content or (section == "Final review" and head not in content):
@@ -644,6 +786,11 @@ def main() -> int:
     p.add_argument("--plan", required=True)
     p.add_argument("--branch", required=True)
     p.add_argument("--base", default="dev")
+    p = sub.add_parser("pr-body", help="write reviewed merge sections to a pull request")
+    p.add_argument("--repository", required=True)
+    p.add_argument("--plan", required=True)
+    p.add_argument("--branch", required=True)
+    p.add_argument("--base", default="dev")
     p = sub.add_parser("merge-state", help="read-only status of a matching pull request")
     p.add_argument("--repository", required=True)
     p.add_argument("--branch", required=True)
@@ -668,6 +815,9 @@ def main() -> int:
             return 0
         if args.command == "finalize":
             _finalize(_repo_slug(args.repository), args.plan, args.branch, args.base)
+            return 0
+        if args.command == "pr-body":
+            _pr_body(_repo_slug(args.repository), args.plan, args.branch, args.base)
             return 0
         if args.command == "merge-state":
             _merge_state(_repo_slug(args.repository), args.branch, args.base)

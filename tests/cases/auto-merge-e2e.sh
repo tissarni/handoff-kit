@@ -68,9 +68,13 @@ elif ep.startswith('repos/test/repo/pulls?state=all&head=test:feat/e2e'):
     print(json.dumps([{'number':7,'state':'open','merged_at':None,'merge_commit_sha':None,
       'head':{'ref':'feat/e2e','sha':head,'repo':{'full_name':'test/repo'}},
       'base':{'ref':'dev','sha':d['main'],'repo':{'full_name':'test/repo'}}}]))
+elif ep.endswith('/pulls/7') and method == 'PATCH':
+    d['body'] = next(x[5:] for x in a if x.startswith('body='))
+    d['body_writes'] = d.get('body_writes', 0) + 1
+    state_path.write_text(json.dumps(d)); print('{}')
 elif ep.endswith('/pulls/7'):
     merged = bool(d.get('merged'))
-    body = '## Feature\nfeature\n## Acceptance\naccept\n## Final review\n'+d['head']+'\n## CI\nci\n## Limitations\nnone'
+    body = d.get('body', 'Free-form PR description from the run.')
     print(json.dumps({'number':7,'node_id':'PR_node','body':body,'state':'closed' if merged else 'open',
       'draft':True,'merged':merged,'merge_commit_sha':d.get('merge_sha'), 'mergeable_state':'clean',
       'base':{'ref':'dev','sha':d['main'],'repo':{'full_name':'test/repo'}},
@@ -146,9 +150,10 @@ d = json.loads(state.read_text())
 assert d['ready'] and d['merged'] and d['deleted'], d
 assert d['head'] == review['head'], 'merge was not bound to reviewed head'
 assert d['merge_sha'] and len(d['merge_sha']) == 40
-mutations = [line for line in log.read_text().splitlines() if line.startswith(('POST ','PUT ','DELETE '))]
-assert mutations == ['POST repos/test/repo/git/refs','POST graphql',
+mutations = [line for line in log.read_text().splitlines() if line.startswith(('POST ','PUT ','PATCH ','DELETE '))]
+assert mutations == ['POST repos/test/repo/git/refs','PATCH repos/test/repo/pulls/7','POST graphql',
                      'PUT repos/test/repo/pulls/7/merge','DELETE repos/test/repo/git/refs/heads/feat/e2e'], mutations
+assert d['body_writes'] == 1 and '## Final review' in d['body'] and review['head'] in d['body']
 assert json.loads(policy.read_text()) == json.loads(expected.read_text()), 'policy store changed after assessment'
 assert subprocess.check_output(['git','--git-dir',str(origin),'rev-parse','refs/heads/dev'],text=True).strip() == d['merge_sha']
 assert subprocess.run(['git','--git-dir',str(origin),'cat-file','-e',d['merge_sha']+'^{commit}']).returncode == 0

@@ -181,6 +181,13 @@ isolation.
 The PR body must have non-empty `## Feature`, `## Acceptance`, `## Final review`, `## CI` and
 `## Limitations` sections. The `Final review` section must contain the reviewed head SHA.
 `finalize` enforces those sections and the SHA, but PR prose never grants authority.
+On an auto-policy orchestrated run against `dev`, the orchestrator calls
+`handoff-policy pr-body --repository <owner/name> --plan <plan> --branch <branch> [--base dev]`
+after final review and before `finalize` to write the managed sections from the plan and review evidence.
+`pr-body` changes only the block between its `<!-- handoff:merge-sections -->` markers and keeps
+the rest of the body. It sends the whole body, built from the copy fetched just before writing, so
+a concurrent edit to the PR body made between that fetch and the PATCH is lost. A marker line
+counts wherever it appears, even inside a code fence; an unmatched or repeated marker is refused.
 
 Feature PRs stay drafts during implementation. Only after every merge check has passed
 (policy, evidence, identity, PR body and required CI on the exact head) does `finalize`
@@ -194,10 +201,12 @@ matching human merge against the recorded reviewed head before completing. A fin
 FAIL makes the plan `broken`. An ambiguous merge result (exit 3) is not retried
 automatically: verify the PR and target branch first, then resume only when its state is
 known. Exit 4 means merge succeeded but branch cleanup failed; the plan completes with a
-warning and the leftover branch can be cleaned up separately. To retry a refused finalize
-by hand after correcting the cause, use the `finalize` command above; it requires the plan's
-valid final-review evidence and current readiness checks. Use `hold`/`release` to pause or
-resume eligibility at repository or task scope.
+warning and the leftover branch can be cleaned up separately. If the orchestrator refuses
+with `PR body not written`, correct the cause, run `handoff-policy pr-body ...`, then
+`handoff-policy finalize ...`, and finally resume the orchestrator to reconcile completion.
+`finalize` alone cannot recover an incomplete body; no automatic retry is performed. The
+`finalize` command requires the plan's valid final-review evidence and current readiness
+checks. Use `hold`/`release` to pause or resume eligibility at repository or task scope.
 
 This kit's CI workflow runs the test suite on every push and pull request; it has no
 deployment job. Merging into `dev` may trigger workflows configured by the repository—check

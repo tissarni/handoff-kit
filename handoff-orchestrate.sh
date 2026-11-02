@@ -464,9 +464,8 @@ resume_awaiting_merge() {
         exit 1
       fi
       log_event "MERGE VERIFIED ${first:0:7} into $BASE_BRANCH"
+      release_checkout_lock
       set_plan_orch done
-      local clf; clf="$(checkout_lock_path 2>/dev/null)" || clf=""
-      if [ -n "$clf" ] && [ -f "$clf" ] && [ "$(head -1 "$clf")" = "$(readlink -f "$PLAN")" ]; then rm -f "$clf"; fi
       write_status "DONE · merge ${first:0:7} verified into $BASE_BRANCH · $(ts "$(now_s)")" "$(phase_summary)"
       retire_watchdog
       notify "DONE · merge ${first:0:7} verified into $BASE_BRANCH"
@@ -522,6 +521,12 @@ lock_pid()   { awk 'NR==1{print $2}' "$LOCK" 2>/dev/null || true; }
 lock_alive() { local p; p="$(lock_pid)"; [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 write_lock() { printf 'pid %s started %s %s\n' "$1" "$(now_s)" "$(ts "$(now_s)")" >"$LOCK.tmp.$$" && mv -f "$LOCK.tmp.$$" "$LOCK"; }
 release_lock() { rm -f "$LOCK" "$STAGE_FILE" "$LOCK.tick"; }
+# The plan is finished with its checkout: drop the checkout lock, only if it is ours. Call it
+# before writing `orchestration: done`, so anyone who sees done can start the next plan there.
+release_checkout_lock() {
+  local clf; clf="$(checkout_lock_path 2>/dev/null)" || clf=""
+  if [ -n "$clf" ] && [ -f "$clf" ] && [ "$(head -1 "$clf")" = "$(readlink -f "$PLAN")" ]; then rm -f "$clf"; fi
+}
 
 # The checkout lock lives in the checkout's own git dir (per worktree, never tracked, never
 # in `git status`). It holds one line: the real path of the plan that owns the checkout.
@@ -1510,18 +1515,37 @@ phase_done() {
         echo "awaiting merge into $BASE_BRANCH: $reason"
         return 0
       fi
+      pr_body_out=""
+      pr_body_rc=0
+      slug="$(github_repo_slug)" || slug=""
+      if [ -z "$slug" ]; then
+        pr_body_rc=1; pr_body_out="pr-body refused: GitHub repository identity unavailable"
+      elif [ -z "${GH_TOKEN:-}" ] || [ -z "${GH_HOST:-}" ]; then
+        pr_body_rc=1; pr_body_out="pr-body refused: GH_TOKEN and GH_HOST are required"
+      else
+        if pr_body_out="$(python3 "$merge_helper" pr-body --repository "$slug" --plan "$PLAN" --branch "$WANT_BRANCH" --base "$BASE_BRANCH" 2>&1)"; then pr_body_rc=0; else pr_body_rc=$?; fi
+      fi
+      if [ "$pr_body_rc" -ne 0 ]; then
+        reason="PR body not written — $(printf '%s\n' "$pr_body_out" | tail -1)"
+        log_event "AWAITING MERGE ${review_head:0:7} — $reason"
+        write_status "AWAITING MERGE · final review PASS ${review_head:0:7} · merge into $BASE_BRANCH not attempted · $(ts "$(now_s)")" "$(printf 'PR: %s' "$(pr_url)")"
+        set_plan_orch awaiting-merge; set_phase_status done; release_lock
+        notify "AWAITING MERGE · final review PASS ${review_head:0:7} · $reason"
+        echo "awaiting merge into $BASE_BRANCH: $reason"
+        return 0
+      fi
+      log_event "PR BODY written"
       auto_finalize "$merge_helper" "$review_head"
       return 0
     fi
+    release_checkout_lock
     set_plan_orch done
   else
+    release_checkout_lock
     set_plan_orch phase-done
   fi
   set_phase_status done
   release_lock
-  # the plan is finished with its checkout: drop the checkout lock, only if it is ours
-  local clf; clf="$(checkout_lock_path 2>/dev/null)" || clf=""
-  if [ -n "$clf" ] && [ -f "$clf" ] && [ "$(head -1 "$clf")" = "$(readlink -f "$PLAN")" ]; then rm -f "$clf"; fi
   write_status "DONE · phase $((PLAN_PHASE_IDX+1))/$PLAN_PHASE_COUNT · $PLAN_PHASE_NAME · $PLAN_BRIEF_COUNT briefs closed · $(ts "$(now_s)")" "$(phase_summary)"
   [ $((PLAN_PHASE_IDX+1)) -ge "$PLAN_PHASE_COUNT" ] && retire_watchdog
   notify "DONE · phase $((PLAN_PHASE_IDX+1))/$PLAN_PHASE_COUNT · $PLAN_PHASE_NAME · $PLAN_BRIEF_COUNT briefs closed"
@@ -1553,9 +1577,8 @@ auto_finalize() {  # $1 = merge helper, $2 = reviewed head
         esac
         log_event "MERGED ${merge_sha:0:7} into $BASE_BRANCH — verified"
         if [ "$cleanup" = failed ]; then log_event "$cleanup_event; leftover branch $WANT_BRANCH"; else log_event "$cleanup_event"; fi
+        release_checkout_lock
         set_plan_orch done; set_phase_status done; release_lock
-        clf="$(checkout_lock_path 2>/dev/null)" || clf=""
-        if [ -n "$clf" ] && [ -f "$clf" ] && [ "$(head -1 "$clf")" = "$(readlink -f "$PLAN")" ]; then rm -f "$clf"; fi
         write_status "DONE · merged into $BASE_BRANCH · $(ts "$(now_s)")" "$(phase_summary)"
         retire_watchdog
         if [ "$cleanup" = failed ]; then notify "DONE · merged ${merge_sha:0:7} into $BASE_BRANCH — $cleanup_event; leftover branch $WANT_BRANCH"; else notify "DONE · merged ${merge_sha:0:7} into $BASE_BRANCH — $cleanup_event"; fi

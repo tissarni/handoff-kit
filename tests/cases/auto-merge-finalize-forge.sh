@@ -107,9 +107,9 @@ def exercise(label, cfg, expect=0, reason=None, graphql=None, puts=None, deletes
  if p.returncode != expect: raise AssertionError(f'{label}: exit {p.returncode}, wanted {expect}: {p.stderr}; calls={lines}')
  channel = p.stdout if expect == 0 else p.stderr
  if reason and reason not in channel: raise AssertionError(f'{label}: missing status/reason {reason!r}: stdout={p.stdout!r} stderr={p.stderr!r}')
- if expect == 1 and (not p.stderr.startswith('handoff-merge: ') or any(x.split(' ',1)[0] in ('PUT','PATCH','DELETE') or (x.startswith('POST ') and x != 'POST graphql') for x in lines) or ('POST graphql' in lines and graphql is False)): raise AssertionError(f'{label}: uncontrolled refusal or write: {p.stderr} {lines}')
+ if expect in (1,5) and (not p.stderr.startswith('handoff-merge: ') or any(x.split(' ',1)[0] in ('PUT','PATCH','DELETE') or (x.startswith('POST ') and x != 'POST graphql') for x in lines) or ('POST graphql' in lines and graphql is False)): raise AssertionError(f'{label}: uncontrolled refusal or write: {p.stderr} {lines}')
  if graphql is not None and ('POST graphql' in lines) != graphql: raise AssertionError(f'{label}: GraphQL calls unexpected: {lines}')
- expected_puts = (0 if expect else 1) if puts is None else puts
+ expected_puts = (0 if expect in (1,5) else 1) if puts is None else puts
  if sum(x.startswith('PUT ') for x in lines) != expected_puts: raise AssertionError(f'{label}: expected {expected_puts} merge PUTs: {lines}')
  if deletes is not None and sum(x.startswith('DELETE ') for x in lines) != deletes: raise AssertionError(f'{label}: expected {deletes} DELETEs: {lines}')
  return p, lines
@@ -121,7 +121,7 @@ for label,cfg in [('403 fallback',{'draft':False,'protection_http':403,'protecti
 for label,cfg,reason,gql in [
  ('required context missing',{'draft':False,'runs':[]},'required check not visible: ci',False),
  ('required check failed',{'draft':False,'runs':[{'name':'ci','status':'completed','conclusion':'failure'}]},'required check unsuccessful: ci',False),
- ('check-run pending',{'draft':False,'runs':[{'name':'ci','status':'in_progress','conclusion':None}]},'required check unsuccessful: ci',False),
+ ('check-run pending',{'draft':False,'runs':[{'name':'ci','status':'in_progress','conclusion':None}]},'pending:',False),
  ('page two failure',{'draft':False,'page2_failure':True},'required check unsuccessful: ci',False),
  ('legacy status failure',{'draft':False,'runs':[],'statuses':[{'context':'ci','state':'failure'}]},'required check unsuccessful: ci',False),
  ('404 empty pending fallback',{'draft':False,'protection_http':404,'runs':[],'combined_state':'pending','statuses':[]},'required checks are absent or unsuccessful',False),
@@ -134,7 +134,7 @@ for label,cfg,reason,gql in [
  ('graphql mutation error',{'draft':True,'graphql_error':True},'GitHub POST graphql failed',True),
  ('changed head after ready',{'draft':True,'post_ready_head':True},'refused after marking ready',True),
 ]:
- exercise(label,cfg,expect=1,reason=reason,graphql=gql)
+ exercise(label,cfg,expect=5 if reason=='pending:' else 1,reason=reason,graphql=gql)
 for label,cfg,expect,reason,puts,deletes in [
  ('already merged restart',{'draft':False,'initial_merged':True},0,'already merged',0,1),
  ('PUT error reconciled merged',{'draft':False,'put_error':True,'merge_on_error':True},0,None,1,1),
@@ -201,8 +201,8 @@ for label,cfg in [
 for label,cfg,reason in [
  ('failed run',{'draft':False,'wruns':[wr(1,1,[jb('ci','completed','failure')],conclusion='failure')]},'required check unsuccessful: ci'),
  ('failed run, fallback',{'draft':False,'protection_http':404,'wruns':[wr(1,1,[jb('ci','completed','failure')],conclusion='failure')]},'required checks are absent or unsuccessful'),
- ('in-progress run',{'draft':False,'wruns':[wr(1,1,[jb('ci','in_progress',None)],'in_progress',None)]},'required check unsuccessful: ci'),
- ('in-progress run, fallback',{'draft':False,'protection_http':404,'wruns':[wr(1,1,[jb('ci','in_progress',None)],'in_progress',None)]},'required checks are absent or unsuccessful'),
+ ('in-progress run',{'draft':False,'wruns':[wr(1,1,[jb('ci','in_progress',None)],'in_progress',None)]},'pending:'),
+ ('in-progress run, fallback',{'draft':False,'protection_http':404,'wruns':[wr(1,1,[jb('ci','in_progress',None)],'in_progress',None)]},'pending:'),
  ('cancelled run',{'draft':False,'wruns':[wr(1,1,[jb('ci','completed','cancelled')],conclusion='cancelled')]},'required check unsuccessful: ci'),
  ('cancelled run, fallback',{'draft':False,'protection_http':404,'wruns':[wr(1,1,[jb('ci','completed','cancelled')],conclusion='cancelled')]},'required checks are absent or unsuccessful'),
  ('failed job inside success run',{'draft':False,'wruns':[wr(1,1,[jb('ci','completed','failure')])]},'required check unsuccessful: ci'),
@@ -222,7 +222,7 @@ for label,cfg,reason in [
  ('actions 403, draft',{'draft':True,'actions_http':403},'ci not readable: grant Actions: Read and Commit statuses: Read'),
  ('actions 403, fallback',{'draft':False,'protection_http':403,'actions_http':403},'ci not readable: grant Actions: Read and Commit statuses: Read'),
 ]:
- p,lines=exercise(label,cfg,expect=1,reason=reason,graphql=False)
+ p,lines=exercise(label,cfg,expect=5 if reason=='pending:' else 1,reason=reason,graphql=False)
  if any(x.startswith(('PUT ','PATCH ','DELETE ','POST ')) for x in lines): raise AssertionError(f'{label}: mutation before refusal: {lines}')
 for label,cfg,expect in [('report refusal',{'draft':False,'runs':[{'name':'ci','status':'completed','conclusion':'failure'}]},1),('report ambiguous',{'draft':False,'put_error':True},3)]:
  p,lines=exercise(label,cfg,expect=expect,puts=0 if expect==1 else 1)

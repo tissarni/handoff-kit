@@ -81,8 +81,12 @@ elif ep.endswith('/pulls/7'):
       'head':{'ref':'feat/e2e','sha':d['head'],'repo':{'full_name':'test/repo'}}}))
 elif ep.endswith('/protection/required_status_checks'):
     print('{"contexts":["ci"],"checks":[]}')
-elif '/check-runs' in ep:
-    print('{"total_count":1,"check_runs":[{"name":"ci","status":"completed","conclusion":"success","started_at":"2026-01-01T00:00:00Z","id":1}]}')
+elif 'check-runs' in ep:
+    print('HTTP 404 check-runs must never be requested', file=sys.stderr); sys.exit(8)
+elif '/actions/runs/1/jobs' in ep:
+    print('[{"total_count":1,"jobs":[{"name":"ci","status":"completed","conclusion":"success","started_at":"2026-01-01T00:00:00Z","id":11}]}]')
+elif '/actions/runs?head_sha='+d['head'] in ep:
+    print(json.dumps([{'total_count':1,'workflow_runs':[{'id':1,'workflow_id':1,'name':'wf','event':'push','head_sha':d['head'],'status':'completed','conclusion':'success','created_at':'2026-01-01T00:00:00Z'}]}]))
 elif ep.endswith('/commits/'+d['head']+'/status'):
     print('{"state":"success","statuses":[]}')
 elif ep == 'graphql' and method == 'POST':

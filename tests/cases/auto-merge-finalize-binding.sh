@@ -53,8 +53,9 @@ if ep.endswith('/pulls/7'):
  print(json.dumps({'number':7,'node_id':'PR_node','body':'## Feature\\nfeature\\n## Acceptance\\naccept\\n## Final review\\n'+os.environ['FAKE_HEAD']+'\\n## CI\\nci\\n## Limitations\\nnone','state':c.get('state','open'),'draft':c.get('draft',False),'merged':d['merged'],'merge_commit_sha':'c'*40 if d['merged'] else None,'mergeable_state':c.get('mergeable_state','clean'),'base':{'ref':c.get('base_ref','dev'),'sha':c.get('base_sha',os.environ['FAKE_BASE']),'repo':{'full_name':c.get('base_repo','acme/widget')}},'head':{'ref':c.get('head_ref','feature/x'),'sha':c.get('head_sha',os.environ['FAKE_HEAD']),'repo':{'full_name':c.get('head_repo','acme/widget')}}})); sys.exit(0)
 if ep.endswith('/protection/required_status_checks'): print(json.dumps(c.get('protection',{'contexts':['ci'],'checks':[]}))); sys.exit(0)
 if ep.endswith('/commits/'+os.environ['FAKE_HEAD']+'/status'): print(json.dumps({'state':'success','statuses':c.get('statuses',[])})); sys.exit(0)
-if '/commits/'+os.environ['FAKE_HEAD']+'/check-runs' in ep:
- print(json.dumps({'total_count':1,'check_runs':c.get('runs',[{'name':'ci','status':'completed','conclusion':'success','started_at':'2026-01-01T00:00:00Z','id':1}])})); sys.exit(0)
+if 'check-runs' in ep: print('HTTP 404 check-runs must never be requested',file=sys.stderr); sys.exit(8)
+if '/actions/runs/1/jobs' in ep: print(json.dumps([{'total_count':1,'jobs':c.get('jobs',[{'name':'ci','status':'completed','conclusion':'success','started_at':'2026-01-01T00:00:00Z','id':11}])}])); sys.exit(0)
+if '/actions/runs?head_sha='+os.environ['FAKE_HEAD'] in ep: print(json.dumps([{'total_count':1,'workflow_runs':[{'id':1,'workflow_id':1,'name':'wf','event':'push','head_sha':os.environ['FAKE_HEAD'],'status':'completed','conclusion':'success','created_at':'2026-01-01T00:00:00Z'}]}])); sys.exit(0)
 if ep == 'graphql':
  if c.get('graphql_error'): print('graphql error',file=sys.stderr); sys.exit(1)
  sys.stdout.write('{}'); sys.exit(0)

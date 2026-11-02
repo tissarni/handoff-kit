@@ -36,7 +36,9 @@ elif endpoint.endswith('/pulls/7'):
       'head': {'ref': 'feature/x', 'sha': os.environ.get('FORGE_HEAD', 'headsha'),
         'repo': {'full_name': 'acme/widget'}}}
 elif endpoint.endswith('/commits/headsha/status'): result = {'state': os.environ.get('FORGE_STATUS', 'success')}
-elif endpoint.endswith('/commits/headsha/check-runs'): result = {'check_runs': [{'status': 'completed', 'conclusion': 'success'}]}
+elif 'check-runs' in endpoint: print('HTTP 404 check-runs must never be requested', file=sys.stderr); sys.exit(8)
+elif '/actions/runs/1/jobs' in endpoint: result = [{'total_count': 1, 'jobs': [{'name': 'ci', 'status': 'completed', 'conclusion': 'success', 'id': 11}]}]
+elif '/actions/runs?head_sha=headsha' in endpoint: result = [{'total_count': 1, 'workflow_runs': [{'id': 1, 'workflow_id': 1, 'name': 'wf', 'event': 'push', 'head_sha': 'headsha', 'status': 'completed', 'conclusion': 'success', 'created_at': '2026-01-01T00:00:00Z'}]}]
 elif endpoint.endswith('/pulls/7/merge') and method == 'PUT':
     if 'sha=headsha' not in args or 'merge_method=squash' not in args: sys.exit(3)
     data['merged'] = True; result = {'merged': True}

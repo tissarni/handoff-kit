@@ -215,6 +215,23 @@ workflows. Finalize requires `GH_TOKEN` and `GH_HOST` in the orchestrator enviro
 the GitHub host set to `github.com`. The companion project-initializer integration is
 outside this repository.
 
+Finalize reads CI from GitHub Actions (workflow runs and their jobs for the exact head)
+and from commit statuses, never from check-runs, so it behaves the same on public and
+private repositories. A fine-grained token needs these permissions for the merge, on any
+repository:
+
+- Contents: Read and write
+- Pull requests: Read and write
+- Actions: Read
+- Commit statuses: Read
+- Metadata: Read
+
+Checks is not used: fine-grained tokens cannot be granted it. Checks posted only by
+third-party GitHub Apps (neither an Actions job nor a commit status) are therefore not
+seen, and a required context that only such an app posts refuses with `required check not
+visible`, leaving the merge to a human. Without Actions or status read access, finalize
+refuses with `ci not readable`.
+
 ## Hermes profiles
 
 The launcher can run a stage on hermes (`--backend hermes`). Hermes keeps one profile per

@@ -50,14 +50,25 @@ if ep.endswith('/pulls/7'):
 if ep.endswith('/protection/required_status_checks'):
  if c.get('protection_http'): print('HTTP '+str(c['protection_http']),file=sys.stderr); sys.exit(1)
  print(json.dumps(c.get('protection',{'contexts':['ci'],'checks':[]}))); sys.exit(0)
-if ep.endswith('/commits/'+os.environ['FAKE_HEAD']+'/status'): print(json.dumps({'state':c.get('combined_state','success'),'statuses':c.get('statuses',[])})); sys.exit(0)
-if '/commits/'+os.environ['FAKE_HEAD']+'/check-runs' in ep:
- page=int(ep.rsplit('page=',1)[1])
- runs=c.get('runs',[{'name':'ci','status':'completed','conclusion':'success','started_at':'2026-01-01T00:00:00Z','id':1}])
- if c.get('page2_failure'):
-  runs=([{'name':'ci','status':'completed','conclusion':'success','started_at':'2026-01-01T00:00:00Z','id':1}]*100 + [{'name':'ci','status':'completed','conclusion':'failure','started_at':'2026-01-02T00:00:00Z','id':2}])
- batch=runs[(page-1)*100:page*100]
- print(json.dumps({'total_count':len(runs),'check_runs':batch})); sys.exit(0)
+if ep.endswith('/commits/'+os.environ['FAKE_HEAD']+'/status'): st=c.get('statuses',[]); print(json.dumps({'state':c.get('combined_state','success'),'total_count':c.get('status_total',len(st)),'statuses':st})); sys.exit(0)
+if 'check-runs' in ep: print('HTTP 404 check-runs must never be requested',file=sys.stderr); sys.exit(8)
+if '/actions/' in ep:
+ if c.get('actions_http'): print('HTTP '+str(c['actions_http']),file=sys.stderr); sys.exit(1)
+ H=os.environ['FAKE_HEAD']
+ if 'wruns' in c: runs=[dict(r) for r in c['wruns']]
+ else:
+  raw=c.get('runs',[{'name':'ci','status':'completed','conclusion':'success'}])
+  if c.get('page2_failure'): raw=[{'name':'ci','status':'completed','conclusion':'success'}]*100+[{'name':'ci','status':'completed','conclusion':'failure'}]
+  runs=[{'id':i+1,'workflow_id':i+1,'name':'wf'+str(i),'status':r['status'],'conclusion':r['conclusion'],'jobs':[dict(r)]} for i,r in enumerate(raw)]
+ for r in runs:
+  r.setdefault('head_sha',H); r.setdefault('event','push'); r.setdefault('created_at','2026-01-01T00:00:00Z')
+  for j,job in enumerate(r.get('jobs',[])): 'id' in job or job.update(id=r['id']*1000+j); job.setdefault('run_id',r['id']); job.setdefault('started_at','2026-01-01T00:00:00Z')
+ if ep.split('?')[0].endswith('/jobs'):
+  rid=int(ep.split('/actions/runs/')[1].split('/')[0]); jobs=[j for r in runs if r['id']==rid for j in r.get('jobs',[])]
+  print(json.dumps([{'total_count':len(jobs),'jobs':jobs}])); sys.exit(0)
+ if '/actions/runs?head_sha='+H in ep and '--slurp' in a:
+  out=[{'total_count':len(runs),'workflow_runs':[{k:v for k,v in r.items() if k!='jobs'} for r in runs[i:i+100]]} for i in range(0,len(runs),100)] or [{'total_count':0,'workflow_runs':[]}]
+  print(json.dumps(out)); sys.exit(0)
 if ep == 'graphql':
  if c.get('graphql_error'): print('graphql mutation error',file=sys.stderr); sys.exit(1)
  d['ready']=True; state.write_text(json.dumps(d)); sys.stdout.write('{}'); sys.exit(0)
@@ -91,6 +102,8 @@ def exercise(label, cfg, expect=0, reason=None, graphql=None, puts=None, deletes
  control.write_text(json.dumps(cfg)); state.write_text('{"merged":false}'); log.write_text('')
  p=subprocess.run(argv,text=True,capture_output=True,env=env)
  lines=log.read_text().splitlines()
+ # Public and private repositories make the same calls (Actions runs, jobs, statuses), so one fake serves both.
+ if any('check-runs' in x for x in lines): raise AssertionError(f'{label}: check-runs requested: {lines}')
  if p.returncode != expect: raise AssertionError(f'{label}: exit {p.returncode}, wanted {expect}: {p.stderr}; calls={lines}')
  channel = p.stdout if expect == 0 else p.stderr
  if reason and reason not in channel: raise AssertionError(f'{label}: missing status/reason {reason!r}: stdout={p.stdout!r} stderr={p.stderr!r}')
@@ -106,7 +119,7 @@ if 'POST graphql' in lines: raise AssertionError(f'non-draft PR used GraphQL: {l
 for label,cfg in [('403 fallback',{'draft':False,'protection_http':403,'protection':{},'runs':[{'name':'info','status':'completed','conclusion':'neutral'},{'name':'skip','status':'completed','conclusion':'skipped'},{'name':'green','status':'completed','conclusion':'success'}]}),('empty protection fallback',{'draft':False,'protection':{'contexts':[],'checks':[]},'runs':[{'name':'info','status':'completed','conclusion':'neutral'},{'name':'skip','status':'completed','conclusion':'skipped'},{'name':'green','status':'completed','conclusion':'success'}]})]:
  exercise(label,cfg)
 for label,cfg,reason,gql in [
- ('required context missing',{'draft':False,'runs':[]},'required check missing: ci',False),
+ ('required context missing',{'draft':False,'runs':[]},'required check not visible: ci',False),
  ('required check failed',{'draft':False,'runs':[{'name':'ci','status':'completed','conclusion':'failure'}]},'required check unsuccessful: ci',False),
  ('check-run pending',{'draft':False,'runs':[{'name':'ci','status':'in_progress','conclusion':None}]},'required check unsuccessful: ci',False),
  ('page two failure',{'draft':False,'page2_failure':True},'required check unsuccessful: ci',False),
@@ -168,6 +181,49 @@ for required in ('merge-sha: '+'c'*40,'branch-cleanup: already-deleted'):
 p,lines=exercise('report cleanup failure',{'draft':False,'delete_error':True},expect=4,reason='cleanup failed',puts=1,deletes=1)
 for required in ('merge-sha: '+'c'*40,'branch-cleanup: failed'):
  if required not in p.stdout: raise AssertionError(f'missing reporting line {required!r}: {p.stdout!r}')
+def jb(name, status='completed', conclusion='success', **kw): return dict({'name':name,'status':status,'conclusion':conclusion}, **kw)
+def wr(id, wf, jobs, status='completed', conclusion='success', created='2026-01-01T00:00:00Z', head_sha=None, event='push'):
+ r={'id':id,'workflow_id':wf,'name':'wf'+str(wf),'status':status,'conclusion':conclusion,'created_at':created,'event':event,'jobs':jobs}
+ if head_sha: r['head_sha']=head_sha
+ return r
+green=wr(1,1,[jb('ci')])
+for label,cfg in [
+ ('green run merges',{'draft':False,'wruns':[green]}),
+ ('green run merges, fallback',{'draft':False,'protection_http':404,'wruns':[green]}),
+ ('old failed run, newer success of same workflow',{'draft':False,'wruns':[wr(1,1,[jb('ci','completed','failure')],conclusion='failure'),wr(2,1,[jb('ci')],created='2026-01-02T00:00:00Z')]}),
+ ('old failed run, newer success, fallback',{'draft':False,'protection_http':404,'wruns':[wr(1,1,[jb('ci','completed','failure')],conclusion='failure'),wr(2,1,[jb('ci')],created='2026-01-02T00:00:00Z')]}),
+ ('run for a foreign head is ignored',{'draft':False,'protection_http':404,'wruns':[green,wr(5,5,[jb('x','completed','failure')],conclusion='failure',head_sha='e'*40)]}),
+ ('required context matched by job name',{'draft':False,'protection':{'contexts':['build'],'checks':[]},'wruns':[wr(1,1,[jb('lint'),jb('build')])]}),
+ ('required context matched by check definition',{'draft':False,'protection':{'contexts':[],'checks':[{'context':'build','app_id':1}]},'wruns':[wr(1,1,[jb('build')])]}),
+ ('required context matched by status',{'draft':False,'protection':{'contexts':['lint'],'checks':[]},'wruns':[],'statuses':[{'context':'lint','state':'success'}]}),
+ ('no runs, successful status, fallback',{'draft':False,'protection_http':404,'wruns':[],'statuses':[{'context':'ext','state':'success'}]}),
+]: exercise(label,cfg)
+for label,cfg,reason in [
+ ('failed run',{'draft':False,'wruns':[wr(1,1,[jb('ci','completed','failure')],conclusion='failure')]},'required check unsuccessful: ci'),
+ ('failed run, fallback',{'draft':False,'protection_http':404,'wruns':[wr(1,1,[jb('ci','completed','failure')],conclusion='failure')]},'required checks are absent or unsuccessful'),
+ ('in-progress run',{'draft':False,'wruns':[wr(1,1,[jb('ci','in_progress',None)],'in_progress',None)]},'required check unsuccessful: ci'),
+ ('in-progress run, fallback',{'draft':False,'protection_http':404,'wruns':[wr(1,1,[jb('ci','in_progress',None)],'in_progress',None)]},'required checks are absent or unsuccessful'),
+ ('cancelled run',{'draft':False,'wruns':[wr(1,1,[jb('ci','completed','cancelled')],conclusion='cancelled')]},'required check unsuccessful: ci'),
+ ('cancelled run, fallback',{'draft':False,'protection_http':404,'wruns':[wr(1,1,[jb('ci','completed','cancelled')],conclusion='cancelled')]},'required checks are absent or unsuccessful'),
+ ('failed job inside success run',{'draft':False,'wruns':[wr(1,1,[jb('ci','completed','failure')])]},'required check unsuccessful: ci'),
+ ('failed job inside success run, fallback',{'draft':False,'protection_http':404,'wruns':[wr(1,1,[jb('lint'),jb('ci','completed','failure')])]},'required checks are absent or unsuccessful'),
+ ('failed status beside green run, fallback',{'draft':False,'protection_http':404,'wruns':[green],'statuses':[{'context':'ext','state':'failure'}]},'required checks are absent or unsuccessful'),
+ ('no runs and no statuses',{'draft':False,'protection_http':404,'wruns':[],'combined_state':'success','statuses':[]},'required checks are absent or unsuccessful'),
+ ('required context visible nowhere',{'draft':False,'protection':{'contexts':['ghost'],'checks':[]},'wruns':[green]},'required check not visible: ghost'),
+ ('actions 403',{'draft':False,'actions_http':403},'ci not readable: grant Actions: Read and Commit statuses: Read'),
+ ('combined status failing beyond the listed page, fallback',{'draft':False,'protection_http':404,'wruns':[green],'combined_state':'failure','statuses':[{'context':'ext','state':'success'}]},'required checks are absent or unsuccessful'),
+ ('combined status failing beyond the listed page',{'draft':False,'protection':{'contexts':['ci'],'checks':[]},'wruns':[green],'combined_state':'failure','statuses':[{'context':'ext','state':'success'}]},'commit status is not success'),
+ ('more statuses than listed',{'draft':False,'protection_http':404,'wruns':[green],'status_total':31,'statuses':[{'context':'ext','state':'success'}]},'commit statuses are truncated'),
+ ('run without workflow identity',{'draft':False,'protection_http':404,'wruns':[{'id':1,'status':'completed','conclusion':'failure','created_at':'2026-01-01T00:00:00Z','event':'push','jobs':[jb('ci','completed','failure')]},{'id':2,'status':'completed','conclusion':'success','created_at':'2026-01-02T00:00:00Z','event':'push','jobs':[jb('ci')]}]},'invalid workflow_runs response'),
+ ('run id that is not a plain integer',{'draft':False,'protection_http':404,'wruns':[wr('²',1,[jb('ci',id=1,run_id=1)])]},'invalid workflow_runs response'),
+ ('success run without jobs, fallback',{'draft':False,'protection_http':404,'wruns':[wr(1,1,[])]},'required checks are absent or unsuccessful'),
+ ('success run without jobs',{'draft':False,'wruns':[wr(1,1,[])]},'required check not visible: ci'),
+ ('same-named job queued in another workflow',{'draft':False,'wruns':[wr(1,1,[jb('ci')]),wr(2,2,[jb('ci','queued',None,started_at=None)],'queued',None)]},'required check unsuccessful: ci'),
+ ('actions 403, draft',{'draft':True,'actions_http':403},'ci not readable: grant Actions: Read and Commit statuses: Read'),
+ ('actions 403, fallback',{'draft':False,'protection_http':403,'actions_http':403},'ci not readable: grant Actions: Read and Commit statuses: Read'),
+]:
+ p,lines=exercise(label,cfg,expect=1,reason=reason,graphql=False)
+ if any(x.startswith(('PUT ','PATCH ','DELETE ','POST ')) for x in lines): raise AssertionError(f'{label}: mutation before refusal: {lines}')
 for label,cfg,expect in [('report refusal',{'draft':False,'runs':[{'name':'ci','status':'completed','conclusion':'failure'}]},1),('report ambiguous',{'draft':False,'put_error':True},3)]:
  p,lines=exercise(label,cfg,expect=expect,puts=0 if expect==1 else 1)
  if 'merge-sha:' in p.stdout or 'branch-cleanup:' in p.stdout:

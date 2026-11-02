@@ -50,7 +50,7 @@ if ep.endswith('/pulls/7'):
 if ep.endswith('/protection/required_status_checks'):
  if c.get('protection_http'): print('HTTP '+str(c['protection_http']),file=sys.stderr); sys.exit(1)
  print(json.dumps(c.get('protection',{'contexts':['ci'],'checks':[]}))); sys.exit(0)
-if ep.endswith('/commits/'+os.environ['FAKE_HEAD']+'/status'): print(json.dumps({'state':c.get('combined_state','success'),'statuses':c.get('statuses',[])})); sys.exit(0)
+if ep.endswith('/commits/'+os.environ['FAKE_HEAD']+'/status'): st=c.get('statuses',[]); print(json.dumps({'state':c.get('combined_state','success'),'total_count':c.get('status_total',len(st)),'statuses':st})); sys.exit(0)
 if 'check-runs' in ep: print('HTTP 404 check-runs must never be requested',file=sys.stderr); sys.exit(8)
 if '/actions/' in ep:
  if c.get('actions_http'): print('HTTP '+str(c['actions_http']),file=sys.stderr); sys.exit(1)
@@ -62,7 +62,7 @@ if '/actions/' in ep:
   runs=[{'id':i+1,'workflow_id':i+1,'name':'wf'+str(i),'status':r['status'],'conclusion':r['conclusion'],'jobs':[dict(r)]} for i,r in enumerate(raw)]
  for r in runs:
   r.setdefault('head_sha',H); r.setdefault('event','push'); r.setdefault('created_at','2026-01-01T00:00:00Z')
-  for j,job in enumerate(r.get('jobs',[])): job.setdefault('id',r['id']*1000+j); job.setdefault('run_id',r['id']); job.setdefault('started_at','2026-01-01T00:00:00Z')
+  for j,job in enumerate(r.get('jobs',[])): 'id' in job or job.update(id=r['id']*1000+j); job.setdefault('run_id',r['id']); job.setdefault('started_at','2026-01-01T00:00:00Z')
  if ep.split('?')[0].endswith('/jobs'):
   rid=int(ep.split('/actions/runs/')[1].split('/')[0]); jobs=[j for r in runs if r['id']==rid for j in r.get('jobs',[])]
   print(json.dumps([{'total_count':len(jobs),'jobs':jobs}])); sys.exit(0)
@@ -211,6 +211,14 @@ for label,cfg,reason in [
  ('no runs and no statuses',{'draft':False,'protection_http':404,'wruns':[],'combined_state':'success','statuses':[]},'required checks are absent or unsuccessful'),
  ('required context visible nowhere',{'draft':False,'protection':{'contexts':['ghost'],'checks':[]},'wruns':[green]},'required check not visible: ghost'),
  ('actions 403',{'draft':False,'actions_http':403},'ci not readable: grant Actions: Read and Commit statuses: Read'),
+ ('combined status failing beyond the listed page, fallback',{'draft':False,'protection_http':404,'wruns':[green],'combined_state':'failure','statuses':[{'context':'ext','state':'success'}]},'required checks are absent or unsuccessful'),
+ ('combined status failing beyond the listed page',{'draft':False,'protection':{'contexts':['ci'],'checks':[]},'wruns':[green],'combined_state':'failure','statuses':[{'context':'ext','state':'success'}]},'commit status is not success'),
+ ('more statuses than listed',{'draft':False,'protection_http':404,'wruns':[green],'status_total':31,'statuses':[{'context':'ext','state':'success'}]},'commit statuses are truncated'),
+ ('run without workflow identity',{'draft':False,'protection_http':404,'wruns':[{'id':1,'status':'completed','conclusion':'failure','created_at':'2026-01-01T00:00:00Z','event':'push','jobs':[jb('ci','completed','failure')]},{'id':2,'status':'completed','conclusion':'success','created_at':'2026-01-02T00:00:00Z','event':'push','jobs':[jb('ci')]}]},'invalid workflow_runs response'),
+ ('run id that is not a plain integer',{'draft':False,'protection_http':404,'wruns':[wr('²',1,[jb('ci',id=1,run_id=1)])]},'invalid workflow_runs response'),
+ ('success run without jobs, fallback',{'draft':False,'protection_http':404,'wruns':[wr(1,1,[])]},'required checks are absent or unsuccessful'),
+ ('success run without jobs',{'draft':False,'wruns':[wr(1,1,[])]},'required check not visible: ci'),
+ ('same-named job queued in another workflow',{'draft':False,'wruns':[wr(1,1,[jb('ci')]),wr(2,2,[jb('ci','queued',None,started_at=None)],'queued',None)]},'required check unsuccessful: ci'),
  ('actions 403, draft',{'draft':True,'actions_http':403},'ci not readable: grant Actions: Read and Commit statuses: Read'),
  ('actions 403, fallback',{'draft':False,'protection_http':403,'actions_http':403},'ci not readable: grant Actions: Read and Commit statuses: Read'),
 ]:

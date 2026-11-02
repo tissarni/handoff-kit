@@ -642,25 +642,38 @@ def _finalize(slug: str, plan: str, branch: str, base: str) -> None:
                 refuse("invalid workflow_runs response")
             if run.get("head_sha") != head:
                 continue
-            rid = str(run.get("id", 0))
+            rid = run.get("id")
+            if not isinstance(rid, int) or isinstance(rid, bool):
+                refuse("invalid workflow_runs response")
+            # Without a workflow identity, two runs could collapse and hide a failure.
+            if run.get("workflow_id") is None and not run.get("name"):
+                refuse("invalid workflow_runs response")
             key = (str(run.get("workflow_id", run.get("name"))), str(run.get("event")))
-            rank = (str(run.get("created_at", "")), int(rid) if rid.isdigit() else 0)
+            rank = (str(run.get("created_at") or ""), rid)
             if key not in newest or rank > newest[key][0]:
                 newest[key] = (rank, run)
         runs = [entry[1] for entry in newest.values()]
         jobs: list = []
+        empty_run = False
         for run in runs:
-            if not isinstance(run.get("id"), int) or isinstance(run.get("id"), bool):
-                refuse("invalid workflow_runs response")
-            jobs.extend(paged(f"repos/{slug}/actions/runs/{run['id']}/jobs?filter=latest&per_page=100", "jobs"))
+            run_jobs = paged(f"repos/{slug}/actions/runs/{run['id']}/jobs?filter=latest&per_page=100", "jobs")
+            empty_run = empty_run or not run_jobs
+            jobs.extend(run_jobs)
         status = _gh("GET", f"repos/{slug}/commits/{head}/status")
         statuses = status.get("statuses") if isinstance(status, dict) else None
         if not isinstance(statuses, list):
             refuse("invalid check results response")
+        # The combined endpoint lists one page of contexts; its state and total cover them all.
+        total = status.get("total_count", len(statuses))
+        if not isinstance(total, int) or isinstance(total, bool) or total > len(statuses):
+            refuse("commit statuses are truncated")
+        status_ok = not statuses or status.get("state") == "success"
         good = ("success", "neutral", "skipped")
         if fallback:
             absent = "required checks are absent or unsuccessful"
             if not runs and not (status.get("state") == "success" and statuses):
+                refuse(absent)
+            if empty_run or not status_ok:
                 refuse(absent)
             if any(run.get("status") != "completed" or run.get("conclusion") not in good for run in runs):
                 refuse(absent)
@@ -679,12 +692,16 @@ def _finalize(slug: str, plan: str, branch: str, base: str) -> None:
                     return None
                 return max(matching, key=lambda item: (str(item.get(time_key) or ""),
                                                        int(item.get("id", 0)) if str(item.get("id", 0)).isdigit() else 0))
+            if not status_ok:
+                refuse("commit status is not success")
             for name in sorted(required):
-                job = latest(jobs, "name", "started_at", name)
+                # Every job of that name in the current runs must be green: a queued twin in another
+                # workflow has no start time and must not lose to an older green one.
+                named = [job for job in jobs if isinstance(job, dict) and job.get("name") == name]
                 legacy = latest(statuses, "context", "created_at", name)
-                if job is None and legacy is None:
+                if not named and legacy is None:
                     refuse(f"required check not visible: {name}")
-                if job is not None and (job.get("status") != "completed" or job.get("conclusion") != "success"):
+                if any(job.get("status") != "completed" or job.get("conclusion") != "success" for job in named):
                     refuse(f"required check unsuccessful: {name}")
                 if legacy is not None and legacy.get("state") != "success":
                     refuse(f"required check unsuccessful: {name}")

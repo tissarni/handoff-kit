@@ -218,7 +218,7 @@ for label,cfg,reason in [
  ('run id that is not a plain integer',{'draft':False,'protection_http':404,'wruns':[wr('²',1,[jb('ci',id=1,run_id=1)])]},'invalid workflow_runs response'),
  ('success run without jobs, fallback',{'draft':False,'protection_http':404,'wruns':[wr(1,1,[])]},'required checks are absent or unsuccessful'),
  ('success run without jobs',{'draft':False,'wruns':[wr(1,1,[])]},'required check not visible: ci'),
- ('same-named job queued in another workflow',{'draft':False,'wruns':[wr(1,1,[jb('ci')]),wr(2,2,[jb('ci','queued',None,started_at=None)],'queued',None)]},'required check unsuccessful: ci'),
+ ('same-named job queued in another workflow',{'draft':False,'wruns':[wr(1,1,[jb('ci')]),wr(2,2,[jb('ci','queued',None,started_at=None)],'queued',None)]},'pending:'),
  ('actions 403, draft',{'draft':True,'actions_http':403},'ci not readable: grant Actions: Read and Commit statuses: Read'),
  ('actions 403, fallback',{'draft':False,'protection_http':403,'actions_http':403},'ci not readable: grant Actions: Read and Commit statuses: Read'),
 ]:

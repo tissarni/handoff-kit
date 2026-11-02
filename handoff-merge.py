@@ -488,7 +488,8 @@ def _pr_body(slug: str, plan: str, branch: str, base: str) -> None:
     print(f"pr-body: written #{number}")
 
 
-def _finalize_decision(slug: str, plan: str, branch: str, base: str) -> tuple[str, str, str, int, str, str, bool]:
+def _finalize_decision(slug: str, plan: str, branch: str, base: str,
+                       *, allow_pending: bool = False) -> tuple[str, str, str, int, str, str, bool]:
     if base != "dev":
         raise Refusal("automatic merges only target dev")
     if Path(slug).is_dir():
@@ -562,7 +563,8 @@ def _finalize_decision(slug: str, plan: str, branch: str, base: str) -> tuple[st
             str(base_repo.get("full_name", "")).lower() != slug.lower() or
             str(head_repo.get("full_name", "")).lower() != slug.lower() or
             head_info.get("ref") != branch or head_info.get("sha") != head or
-            (not already_merged and pr.get("mergeable_state") != "clean") or
+            (not already_merged and pr.get("mergeable_state") != "clean" and
+             not (allow_pending and pr.get("mergeable_state") in ("unknown", "blocked", "unstable"))) or
             (already_merged and (pr.get("merged") is not True or not isinstance(pr.get("merge_commit_sha"), str)
                                  or not re.fullmatch(r"[0-9a-fA-F]{40}", pr["merge_commit_sha"])) )):
         if base_info.get("ref") != base or base_info.get("sha") != evidence_base:
@@ -576,7 +578,8 @@ def _finalize_decision(slug: str, plan: str, branch: str, base: str) -> tuple[st
 
 
 def _finalize(slug: str, plan: str, branch: str, base: str) -> None:
-    _, _, _, number, head, expected_base, already_merged = _finalize_decision(slug, plan, branch, base)
+    _, _, _, number, head, expected_base, already_merged = _finalize_decision(
+        slug, plan, branch, base, allow_pending=True)
     if already_merged:
         print("already merged")
         _verify_merge_and_cleanup(slug, number, head, branch, base)
@@ -620,6 +623,11 @@ def _finalize(slug: str, plan: str, branch: str, base: str) -> None:
             fallback, required = True, set()
         else:
             refuse(str(exc))
+
+    pending_reasons: list[str] = []
+    mergeable_state = pr.get("mergeable_state")
+    if mergeable_state == "unknown":
+        pending_reasons.append("mergeable state unknown")
 
     # CI comes from Actions runs/jobs and commit statuses only: a fine-grained token cannot be
     # granted Checks, so the same calls serve public and private repositories alike.
@@ -671,19 +679,28 @@ def _finalize(slug: str, plan: str, branch: str, base: str) -> None:
         good = ("success", "neutral", "skipped")
         if fallback:
             absent = "required checks are absent or unsuccessful"
-            if not runs and not (status.get("state") == "success" and statuses):
+            if (not runs and not (status.get("state") == "success" and statuses)
+                    and not any(run.get("status") in
+                                ("queued", "in_progress", "waiting", "requested", "pending") for run in runs)):
                 refuse(absent)
-            if empty_run or not status_ok:
+            if not status_ok and status.get("state") == "pending" and total > 0:
+                pending_reasons.append("commit status pending")
+            elif empty_run or not status_ok:
                 refuse(absent)
-            if any(run.get("status") != "completed" or run.get("conclusion") not in good for run in runs):
+            if any(run.get("status") in ("queued", "in_progress", "waiting", "requested", "pending") for run in runs):
+                pending_reasons.append("Actions run pending")
+            elif any(run.get("status") != "completed" or run.get("conclusion") not in good for run in runs):
                 refuse(absent)
-            if any(not isinstance(job, dict) or job.get("status") != "completed"
-                   or job.get("conclusion") not in good for job in jobs):
+            if any(isinstance(job, dict) and job.get("status") in
+                   ("queued", "in_progress", "waiting", "requested", "pending") for job in jobs):
+                pending_reasons.append("Actions job pending")
+            elif any(not isinstance(job, dict) or job.get("status") != "completed"
+                     or job.get("conclusion") not in good for job in jobs):
                 refuse(absent)
             if any(not isinstance(item, dict) or item.get("state") != "success" for item in statuses):
                 refuse(absent)
-            if not (any(run.get("conclusion") == "success" for run in runs)
-                    or any(job.get("conclusion") == "success" for job in jobs) or statuses):
+            if (not pending_reasons and not (any(run.get("conclusion") == "success" for run in runs)
+                    or any(job.get("conclusion") == "success" for job in jobs) or statuses)):
                 refuse(absent)
         else:
             def latest(items: list, name_key: str, time_key: str, name: str) -> dict | None:
@@ -692,7 +709,9 @@ def _finalize(slug: str, plan: str, branch: str, base: str) -> None:
                     return None
                 return max(matching, key=lambda item: (str(item.get(time_key) or ""),
                                                        int(item.get("id", 0)) if str(item.get("id", 0)).isdigit() else 0))
-            if not status_ok:
+            if not status_ok and status.get("state") == "pending" and total > 0:
+                pending_reasons.append("commit status pending")
+            elif not status_ok:
                 refuse("commit status is not success")
             for name in sorted(required):
                 # Every job of that name in the current runs must be green: a queued twin in another
@@ -701,14 +720,26 @@ def _finalize(slug: str, plan: str, branch: str, base: str) -> None:
                 legacy = latest(statuses, "context", "created_at", name)
                 if not named and legacy is None:
                     refuse(f"required check not visible: {name}")
-                if any(job.get("status") != "completed" or job.get("conclusion") != "success" for job in named):
+                if any(job.get("status") in ("queued", "in_progress", "waiting", "requested", "pending")
+                       for job in named):
+                    pending_reasons.append(f"required check pending: {name}")
+                elif any(job.get("status") != "completed" or job.get("conclusion") != "success" for job in named):
                     refuse(f"required check unsuccessful: {name}")
-                if legacy is not None and legacy.get("state") != "success":
+                if legacy is not None and legacy.get("state") == "pending" and total > 0:
+                    pending_reasons.append(f"required check pending: {name}")
+                elif legacy is not None and legacy.get("state") != "success":
                     refuse(f"required check unsuccessful: {name}")
     except Refusal as exc:
         if "HTTP 403" in str(exc):
             refuse("ci not readable: grant Actions: Read and Commit statuses: Read")
         refuse(str(exc))
+
+    if pending_reasons and mergeable_state in ("blocked", "unstable"):
+        pending_reasons.append(f"mergeable state {mergeable_state}")
+    if pending_reasons:
+        raise FinalizeFailure("pending: " + "; ".join(dict.fromkeys(pending_reasons)), 5)
+    if mergeable_state != "clean":
+        refuse("pull request is not clean")
 
     if pr.get("draft") is True:
         node_id = pr.get("node_id")

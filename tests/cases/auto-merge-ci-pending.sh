@@ -17,8 +17,8 @@ def gh(method, endpoint, fields=None, **kw):
     if endpoint.endswith('/protection/required_status_checks'): return {'contexts':[] if state['fallback'] else ['ci'],'checks':[]}
     if '/actions/runs?head_sha=' in endpoint: return [{'workflow_runs':[{'id':1,'workflow_id':1,'name':'ci','event':'push','head_sha':head,'status':state['runs_status'],'conclusion':state['run_conclusion'],'created_at':'now'}]}]
     if '/actions/runs/1/jobs?' in endpoint:
-        jobs=[] if state['jobs_mode']=='empty' else [{'name':'ci','status':state['job_status'],'conclusion':state['job_conclusion']}]
-        return [{'jobs':jobs}]
+        if state['jobs_mode']=='empty': return [{'jobs': []}]
+        return [{'jobs':[{'name':'ci','status':state['job_status'],'conclusion':state['job_conclusion']}]}]
     if endpoint.endswith('/commits/'+head+'/status'): return {'state':state['status_state'],'total_count':state['total'],'statuses':state['statuses']}
     raise AssertionError((method,endpoint))
 m._gh=gh

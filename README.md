@@ -144,7 +144,8 @@ interface. Paths passed to `--repo` are local Git repositories; forge commands t
 - `handoff-policy finalize --repository <owner/name> --plan <plan> --branch <branch>
   [--base dev]` — checks readiness and merges one reviewed feature head. Exit 0 means
   verified completion; exit 1 means refusal; exit 3 means an ambiguous merge outcome that
-  needs human verification; exit 4 means the merge was verified but branch cleanup failed.
+  needs human verification; exit 4 means the merge was verified but branch cleanup failed;
+  exit 5 means CI is still pending and no mutation was made.
 
 ### Risk and final review
 
@@ -207,6 +208,14 @@ with `PR body not written`, correct the cause, run `handoff-policy pr-body ...`,
 `finalize` alone cannot recover an incomplete body; no automatic retry is performed. The
 `finalize` command requires the plan's valid final-review evidence and current readiness
 checks. Use `hold`/`release` to pause or resume eligibility at repository or task scope.
+
+When the only remaining obstacle is pending CI, `finalize` exits 5 with
+`handoff-merge: pending: <reason>` before marking a draft ready or attempting a merge.
+The orchestrator waits and retries, logging one `CI PENDING` event per distinct reason.
+`HANDOFF_CI_POLL_S` controls the interval in seconds (default 60); plan
+`budgets.ci` bounds the total wait in minutes (default 30). A zero-minute budget makes one
+attempt and immediately holds the plan if CI is still pending. Each synchronous `gh` call
+inside a finalize attempt is unbounded; this wait budget does not interrupt one.
 
 This kit's CI workflow runs the test suite on every push and pull request; it has no
 deployment job. Merging into `dev` may trigger workflows configured by the repository—check

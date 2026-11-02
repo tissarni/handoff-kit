@@ -621,50 +621,76 @@ def _finalize(slug: str, plan: str, branch: str, base: str) -> None:
         else:
             refuse(str(exc))
 
+    # CI comes from Actions runs/jobs and commit statuses only: a fine-grained token cannot be
+    # granted Checks, so the same calls serve public and private repositories alike.
     try:
-        runs = []
-        page = 1
-        total_count = None
-        while total_count is None or len(runs) < total_count:
-            checks = _gh("GET", f"repos/{slug}/commits/{head}/check-runs?per_page=100&page={page}")
-            batch = checks.get("check_runs") if isinstance(checks, dict) else None
-            if not isinstance(batch, list):
-                refuse("invalid check-runs response")
-            runs.extend(batch)
-            total_count = checks.get("total_count", len(runs))
-            if not isinstance(total_count, int) or total_count < len(runs) or not batch:
-                if total_count > len(runs) and batch:
-                    refuse("invalid check-runs pagination response")
-                break
-            page += 1
+        def paged(endpoint: str, key: str) -> list:
+            data = _gh("GET", endpoint, allow_list=True, paginate=True)
+            pages = data if isinstance(data, list) else [data]
+            items: list = []
+            for page in pages:
+                batch = page.get(key) if isinstance(page, dict) else None
+                if not isinstance(batch, list):
+                    refuse(f"invalid {key} response")
+                items.extend(batch)
+            return items
+
+        all_runs = paged(f"repos/{slug}/actions/runs?head_sha={head}&per_page=100", "workflow_runs")
+        newest: dict[tuple, dict] = {}
+        for run in all_runs:
+            if not isinstance(run, dict):
+                refuse("invalid workflow_runs response")
+            if run.get("head_sha") != head:
+                continue
+            rid = str(run.get("id", 0))
+            key = (str(run.get("workflow_id", run.get("name"))), str(run.get("event")))
+            rank = (str(run.get("created_at", "")), int(rid) if rid.isdigit() else 0)
+            if key not in newest or rank > newest[key][0]:
+                newest[key] = (rank, run)
+        runs = [entry[1] for entry in newest.values()]
+        jobs: list = []
+        for run in runs:
+            if not isinstance(run.get("id"), int) or isinstance(run.get("id"), bool):
+                refuse("invalid workflow_runs response")
+            jobs.extend(paged(f"repos/{slug}/actions/runs/{run['id']}/jobs?filter=latest&per_page=100", "jobs"))
         status = _gh("GET", f"repos/{slug}/commits/{head}/status")
         statuses = status.get("statuses") if isinstance(status, dict) else None
-        if not isinstance(runs, list) or not isinstance(statuses, list):
+        if not isinstance(statuses, list):
             refuse("invalid check results response")
+        good = ("success", "neutral", "skipped")
         if fallback:
-            if any(not isinstance(run, dict) or run.get("status") != "completed" or
-                   run.get("conclusion") not in ("success", "neutral", "skipped") for run in runs):
-                refuse("required checks are absent or unsuccessful")
-            if not any(run.get("conclusion") == "success" for run in runs) and not (
-                    status.get("state") == "success" and not statuses):
-                refuse("required checks are absent or unsuccessful")
+            absent = "required checks are absent or unsuccessful"
+            if not runs and not (status.get("state") == "success" and statuses):
+                refuse(absent)
+            if any(run.get("status") != "completed" or run.get("conclusion") not in good for run in runs):
+                refuse(absent)
+            if any(not isinstance(job, dict) or job.get("status") != "completed"
+                   or job.get("conclusion") not in good for job in jobs):
+                refuse(absent)
+            if any(not isinstance(item, dict) or item.get("state") != "success" for item in statuses):
+                refuse(absent)
+            if not (any(run.get("conclusion") == "success" for run in runs)
+                    or any(job.get("conclusion") == "success" for job in jobs) or statuses):
+                refuse(absent)
         else:
             def latest(items: list, name_key: str, time_key: str, name: str) -> dict | None:
                 matching = [item for item in items if isinstance(item, dict) and item.get(name_key) == name]
                 if not matching:
                     return None
-                return max(matching, key=lambda item: (str(item.get(time_key, "")),
+                return max(matching, key=lambda item: (str(item.get(time_key) or ""),
                                                        int(item.get("id", 0)) if str(item.get("id", 0)).isdigit() else 0))
-            for name in required:
-                run = latest(runs, "name", "started_at", name)
+            for name in sorted(required):
+                job = latest(jobs, "name", "started_at", name)
                 legacy = latest(statuses, "context", "created_at", name)
-                if run is None and legacy is None:
-                    refuse(f"required check missing: {name}")
-                if run is not None and (run.get("status") != "completed" or run.get("conclusion") != "success"):
+                if job is None and legacy is None:
+                    refuse(f"required check not visible: {name}")
+                if job is not None and (job.get("status") != "completed" or job.get("conclusion") != "success"):
                     refuse(f"required check unsuccessful: {name}")
                 if legacy is not None and legacy.get("state") != "success":
                     refuse(f"required check unsuccessful: {name}")
     except Refusal as exc:
+        if "HTTP 403" in str(exc):
+            refuse("ci not readable: grant Actions: Read and Commit statuses: Read")
         refuse(str(exc))
 
     if pr.get("draft") is True:

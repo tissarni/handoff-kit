@@ -78,6 +78,18 @@ import json,sys
 open(sys.argv[1],'w').write(json.dumps({'head':sys.argv[2],'base':sys.argv[3]}))
 PY
 
+# Record, at the moment each plan is marked done, whether that checkout's lock is still held.
+REAL_PY="$(command -v python3)"
+LOCK_PROBE="$SANDBOX/state/done-lock.log"; : >"$LOCK_PROBE"
+cat >"$SANDBOX/bin/python3" <<SHIM
+#!/bin/sh
+if [ "\$1" = - ] && [ "\$3" = done ]; then
+  gitdir="\$(git -C "$SANDBOX/repo_under.test" rev-parse --absolute-git-dir)"
+  if [ -f "\$gitdir/handoff-plan.lock" ]; then echo "held \$2" >>"$LOCK_PROBE"; else echo "free \$2" >>"$LOCK_PROBE"; fi
+fi
+exec "$REAL_PY" "\$@"
+SHIM
+chmod +x "$SANDBOX/bin/python3"
 _sbx_env
 # The finalize path requires the same explicit host credentials as direct callers.
 env -i "${SBX_ENV[@]}" GH_TOKEN=fake GH_HOST=github.com \
@@ -95,6 +107,7 @@ set -- $close_lines
 [ "$1" -lt "$2" ] && [ "$2" -lt "$review_line" ] && [ "$review_line" -lt "$merge_line" ] || fail "event order was wrong: $close_lines $review_line $merge_line"
 assert_eq "$(/usr/bin/grep -c '^PUT repos/' "$SANDBOX/state/gh.log")" 1 "merge PUT count"
 [ ! -f "$(git -C "$SANDBOX/repo_under.test" rev-parse --absolute-git-dir)/handoff-plan.lock" ] || fail "checkout lock was not released"
+[ -s "$LOCK_PROBE" ] || fail "done-time lock probe did not run"
 
 SECOND_BRIEF="$(make_brief testsub second-plan.md draft)"
 SECOND_PLAN="$(dirname "$SECOND_BRIEF")/second-auto-plan.md"
@@ -308,4 +321,5 @@ assert_eq "$(count_final_review)" "$((final_before + 1))" "main-base final revie
 [ ! -s "$SANDBOX/state/finalize.log" ] || fail "main-base plan invoked finalize"
 if /usr/bin/grep -E '^(POST graphql|PUT |PATCH |DELETE )' "$SANDBOX/state/gh.log" >/dev/null; then fail "main-base plan caused a merge mutation"; fi
 
+if /usr/bin/grep '^held ' "$LOCK_PROBE" >/dev/null; then fail "a plan was marked done while still holding the checkout lock: $(/usr/bin/grep '^held ' "$LOCK_PROBE" | head -3)"; fi
 echo ok

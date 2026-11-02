@@ -685,7 +685,8 @@ def _finalize(slug: str, plan: str, branch: str, base: str) -> None:
                 refuse(absent)
             if not status_ok and status.get("state") == "pending" and total > 0:
                 pending_reasons.append("commit status pending")
-            elif empty_run or not status_ok:
+            elif (empty_run and not any(run.get("status") in
+                                        ("queued", "in_progress", "waiting", "requested", "pending") for run in runs)) or not status_ok:
                 refuse(absent)
             if any(run.get("status") in ("queued", "in_progress", "waiting", "requested", "pending") for run in runs):
                 pending_reasons.append("Actions run pending")

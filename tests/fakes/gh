@@ -4,6 +4,9 @@
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_STATE_DIR/gh.log"
 case "${1:-}:${2:-}" in
+  --version:)
+    echo "gh version ${FAKE_GH_VERSION:-2.103.3} (2026-01-01)"
+    ;;
   pr:create)
     url="https://github.com/test/repo/pull/1"
     printf '%s' "$url" >"$FAKE_STATE_DIR/gh-pr-url"

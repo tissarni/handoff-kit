@@ -68,7 +68,7 @@ fi
 assert_contains "$EVENTS" 'PUBLICATION held for supervisor at phase end'
 
 # A rejected runner push breaks the phase before PHASE DONE or PR creation.
-prepare_closed_phase rejected rejected
+prepare_closed_phase rejected runner
 add_unpushed_commit rejected-unpushed
 cat >"$SANDBOX/origin.git/hooks/pre-receive" <<'HOOK'
 #!/bin/sh

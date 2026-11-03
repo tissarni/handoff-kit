@@ -20,6 +20,7 @@ PY
 cat >"$SANDBOX/bin/gh" <<'GH'
 #!/usr/bin/env python3
 import json,os,pathlib,sys
+if sys.argv[1:] == ['--version']: print('gh version 2.103.3 (2026-01-01)'); raise SystemExit(0)
 root=pathlib.Path(os.environ['HOME']).parent/'state'; f=root/'forge.json'; d=json.loads(f.read_text()); a=sys.argv[1:]; ep=next((x for x in a if x.startswith('repos/')), ''); method=a[a.index('-X')+1] if '-X' in a else 'GET'; (root/'gh.log').open('a').write(method+' '+ep+'\n'); head=d['head']; base=d['base']
 if ep.startswith('repos/test/repo/pulls?state=all&head=test:feat/test'):
  m=bool(d.get('merged')); print(json.dumps([{'number':7,'state':'closed' if m else 'open','merged_at':'2026-01-01T00:00:00Z' if m else None,'merge_commit_sha':'c'*40 if m else None,'head':{'ref':'feat/test','sha':head,'repo':{'full_name':'test/repo'}},'base':{'ref':'dev','sha':base,'repo':{'full_name':'test/repo'}}}]))

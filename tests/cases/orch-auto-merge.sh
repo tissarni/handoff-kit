@@ -35,7 +35,9 @@ cat >"$SANDBOX/bin/gh" <<'GH'
 import json, os, pathlib, sys
 root=pathlib.Path(os.environ['HOME']).parent/'state'; state=root/'forge.json'; log=root/'gh.log'
 d=json.loads(state.read_text()) if state.exists() else {}
-a=sys.argv[1:]; endpoint=next((x for x in a if x.startswith('repos/')), '')
+a=sys.argv[1:]
+if a == ['--version']: print('gh version 2.103.3 (2026-01-01)'); sys.exit(0)
+endpoint=next((x for x in a if x.startswith('repos/')), '')
 method=a[a.index('-X')+1] if '-X' in a else 'GET'
 log.open('a').write(method+' '+endpoint+'\n')
 head=d['head']; base=d['base']

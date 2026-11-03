@@ -15,6 +15,7 @@ open(p,'w').write(s)
 PY
 mkdir -p "$SANDBOX/home/.config/handoff"
 git -C "$repo" remote set-url origin https://github.com/test/repo
+git -C "$repo" update-ref refs/remotes/origin/dev main
 env -i HOME="$SANDBOX/home" PATH="$SANDBOX/bin:/usr/bin:/bin" python3 "$SANDBOX/kit/handoff-merge.py" policy-set --repo "$repo" true >/dev/null
 python3 - "$SANDBOX/home/.config/handoff/project-policy.json" "$plan" "$repo" <<'PY'
 import json,pathlib,sys
@@ -24,7 +25,9 @@ PY
 run_start() {
   local version="$1" path="${2:-$SANDBOX/bin:/usr/bin:/bin}" out rc
   _sbx_env; local e=(); local v
-  for v in "${SBX_ENV[@]}"; do case "$v" in PATH=*) e+=("PATH=$path");; FAKE_GH_VERSION=*) e+=("FAKE_GH_VERSION=$version");; *) e+=("$v");; esac; done
+  local found=0
+  for v in "${SBX_ENV[@]}"; do case "$v" in PATH=*) e+=("PATH=$path");; FAKE_GH_VERSION=*) e+=("FAKE_GH_VERSION=$version"); found=1;; *) e+=("$v");; esac; done
+  [ "$found" -eq 1 ] || e+=("FAKE_GH_VERSION=$version")
   out="$(env -i "${e[@]}" GH_TOKEN=fake GH_HOST=github.com bash "$SANDBOX/kit/handoff-orchestrate.sh" start "$plan" --backend claude --publication-owner supervisor 2>&1)"; rc=$?
   printf '%s\n' "$rc" >"$SANDBOX/state/start.rc"
   printf '%s\n' "$out" >"$SANDBOX/state/start.out"
@@ -32,7 +35,7 @@ run_start() {
 
 run_start 2.23.0
 [ "$(cat "$SANDBOX/state/start.rc")" -eq 2 ] || fail "old gh start did not exit 2: $(cat "$SANDBOX/state/start.out")"
-assert_contains "$SANDBOX/state/start.out" 'preflight:gh — gh >= 2.48 required, found 2.23.0'
+if ! /usr/bin/grep -qF 'preflight:gh — gh >= 2.48 required, found 2.23.0' "$SANDBOX/state/start.out"; then fail "old-gh refusal rc=$(cat "$SANDBOX/state/start.rc"); output=$(cat "$SANDBOX/state/start.out"); gh=$(cat "$SANDBOX/state/gh.log")"; fi
 /usr/bin/grep -q '^orchestration: planned' "$plan" || fail "old gh changed plan state"
 assert_no_file "${plan%.md}.driver.log"
 
@@ -55,11 +58,21 @@ done
 env -i HOME="$SANDBOX/home" PATH="$SANDBOX/bin:/usr/bin:/bin" python3 "$SANDBOX/kit/handoff-merge.py" policy-set --repo "$repo" false >/dev/null
 run_start 2.23.0
 if /usr/bin/grep -q 'preflight:gh' "$SANDBOX/state/start.out"; then fail "manual policy was refused by gh version"; fi
+orch stop "$plan" >/dev/null 2>&1 || true
+wait_for 10 test '!' -f "${plan%.md}.lock" || fail "manual-policy driver lock remained"
+python3 - "$plan" <<'PY'
+import sys
+p=sys.argv[1]; s=open(p).read().replace('orchestration: paused', 'orchestration: planned', 1); open(p,'w').write(s)
+PY
+rm -f "$(git -C "$repo" rev-parse --absolute-git-dir)/handoff-plan.lock"
 
 # Missing gh is diagnosed only for auto policy.
 env -i HOME="$SANDBOX/home" PATH="$SANDBOX/bin:/usr/bin:/bin" python3 "$SANDBOX/kit/handoff-merge.py" policy-set --repo "$repo" true >/dev/null
-run_start 2.23.0 "$SANDBOX/no-gh:/usr/bin:/bin"
-assert_contains "$SANDBOX/state/start.out" 'preflight:gh — gh >= 2.48 required, found none'
+mkdir -p "$SANDBOX/no-gh"
+for tool in /usr/bin/*; do name="${tool##*/}"; [ "$name" = gh ] || ln -s "$tool" "$SANDBOX/no-gh/$name" 2>/dev/null || true; done
+ln -s "$SANDBOX/bin/claude" "$SANDBOX/no-gh/claude"
+run_start 2.23.0 "$SANDBOX/no-gh"
+if ! /usr/bin/grep -qF 'preflight:gh — gh >= 2.48 required, found none' "$SANDBOX/state/start.out"; then fail "missing-gh refusal rc=$(cat "$SANDBOX/state/start.rc"); output=$(cat "$SANDBOX/state/start.out")"; fi
 
 # Retry must gate before merge-state, even if the PR could already be merged.
 retry_plan="$(dirname "$plan")/retry-version-plan.md"

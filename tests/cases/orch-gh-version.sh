@@ -69,8 +69,21 @@ rm -f "$(git -C "$repo" rev-parse --absolute-git-dir)/handoff-plan.lock"
 # Missing gh is diagnosed only for auto policy.
 env -i HOME="$SANDBOX/home" PATH="$SANDBOX/bin:/usr/bin:/bin" python3 "$SANDBOX/kit/handoff-merge.py" policy-set --repo "$repo" true >/dev/null
 mkdir -p "$SANDBOX/no-gh"
-for tool in /usr/bin/*; do name="${tool##*/}"; [ "$name" = gh ] || ln -s "$tool" "$SANDBOX/no-gh/$name" 2>/dev/null || true; done
-ln -s "$SANDBOX/bin/claude" "$SANDBOX/no-gh/claude"
+make_path_without_gh "$SANDBOX/no-gh"
+if env PATH="$SANDBOX/no-gh" bash -c 'command -v gh' >/dev/null 2>&1; then fail "gh resolved in gh-less PATH"; fi
+for name in systemctl launchctl curl; do
+  resolved="$(env PATH="$SANDBOX/no-gh" bash -c 'command -v "$1"' bash "$name")"
+  [ -n "$resolved" ] || fail "$name missing from gh-less PATH"
+  target="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$resolved")"
+  expected="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SANDBOX/bin/$name")"
+  [ "$target" = "$expected" ] || fail "$name did not resolve to sandbox fake: $target"
+done
+bash_path="$(env PATH="$SANDBOX/no-gh" bash -c 'command -v bash')"
+[ -n "$bash_path" ] && [ -x "$bash_path" ] || fail "bash missing or not executable in gh-less PATH"
+case "${OSTYPE:-}" in darwin*)
+  bash_major="$(env PATH="$SANDBOX/no-gh" bash -c 'printf "%s" "${BASH_VERSINFO[0]}"')"
+  [ "$bash_major" -ge 4 ] || fail "gh-less PATH selected bash $bash_major; need bash 4 or newer" ;;
+esac
 run_start 2.23.0 "$SANDBOX/no-gh"
 if ! /usr/bin/grep -qF 'preflight:gh — gh >= 2.48 required, found none' "$SANDBOX/state/start.out"; then fail "missing-gh refusal rc=$(cat "$SANDBOX/state/start.rc"); output=$(cat "$SANDBOX/state/start.out")"; fi
 

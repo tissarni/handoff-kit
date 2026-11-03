@@ -25,7 +25,21 @@ assert_contains "$SANDBOX/state/install.out" 'install.sh: warning: gh >= 2.48 re
 run_install 2.103.3
 if /usr/bin/grep -q 'gh >= 2.48 required' "$SANDBOX/state/install.out"; then fail "new gh emitted a warning"; fi
 mkdir -p "$SANDBOX/no-gh"
-for tool in /usr/bin/*; do name="${tool##*/}"; [ "$name" = gh ] || ln -s "$tool" "$SANDBOX/no-gh/$name" 2>/dev/null || true; done
+make_path_without_gh "$SANDBOX/no-gh"
+if env PATH="$SANDBOX/no-gh" bash -c 'command -v gh' >/dev/null 2>&1; then fail "gh resolved in gh-less PATH"; fi
+for name in systemctl launchctl curl; do
+  resolved="$(env PATH="$SANDBOX/no-gh" bash -c 'command -v "$1"' bash "$name")"
+  [ -n "$resolved" ] || fail "$name missing from gh-less PATH"
+  target="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$resolved")"
+  expected="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SANDBOX/bin/$name")"
+  [ "$target" = "$expected" ] || fail "$name did not resolve to sandbox fake: $target"
+done
+bash_path="$(env PATH="$SANDBOX/no-gh" bash -c 'command -v bash')"
+[ -n "$bash_path" ] && [ -x "$bash_path" ] || fail "bash missing or not executable in gh-less PATH"
+case "${OSTYPE:-}" in darwin*)
+  bash_major="$(env PATH="$SANDBOX/no-gh" bash -c 'printf "%s" "${BASH_VERSINFO[0]}"')"
+  [ "$bash_major" -ge 4 ] || fail "gh-less PATH selected bash $bash_major; need bash 4 or newer" ;;
+esac
 run_install 2.23.0 "$SANDBOX/no-gh"
 if /usr/bin/grep -q 'gh >= 2.48 required' "$SANDBOX/state/install.out"; then fail "missing gh emitted a warning"; fi
 [ "$(cat "$SANDBOX/state/install.rc")" -eq 0 ] || fail "missing-gh install changed exit status"

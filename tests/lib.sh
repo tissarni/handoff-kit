@@ -167,6 +167,21 @@ _sbx_env() {
   [ -n "${FAKE_GH_VERSION+x}" ] && SBX_ENV+=("FAKE_GH_VERSION=$FAKE_GH_VERSION")
 }
 
+make_path_without_gh() {   # $1 = destination directory for a PATH with no gh
+  local dest="$1" sys="/usr/local/bin:/usr/bin:/bin" dir tool name
+  case "${OSTYPE:-}" in darwin*) sys="/opt/homebrew/bin:$sys" ;; esac
+  mkdir -p "$dest"
+  for dir in "$SANDBOX/bin" ${sys//:/ }; do
+    [ -d "$dir" ] || continue
+    for tool in "$dir"/*; do
+      [ -f "$tool" ] && [ -x "$tool" ] || continue
+      name="${tool##*/}"
+      [ "$name" = gh ] && continue
+      [ -e "$dest/$name" ] || [ -L "$dest/$name" ] || ln -s "$tool" "$dest/$name"
+    done
+  done
+}
+
 launch() {
   _sbx_env
   env -i "${SBX_ENV[@]}" bash "$SANDBOX/kit/handoff-launch.sh" "$@"

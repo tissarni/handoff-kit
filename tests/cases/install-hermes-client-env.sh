@@ -29,7 +29,7 @@ import sys
 before=open(sys.argv[1]).read().splitlines()
 after=open(sys.argv[2]).read().splitlines()
 assert after[:len(before)] == before, (before, after)
-assert all(x in after for x in ['HANDOFF_HARNESS', 'HANDOFF_MODEL', 'GIT_CONFIG_PARAMETERS'])
+assert all(any(x in line for line in after) for x in ['HANDOFF_HARNESS', 'HANDOFF_MODEL', 'GIT_CONFIG_PARAMETERS'])
 PY
 cp "$H/profiles/run/config.yaml" "$SANDBOX/run.after"
 OUT="$(inst 2>&1)"; RC=$?

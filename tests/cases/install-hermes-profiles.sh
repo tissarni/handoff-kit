@@ -45,14 +45,14 @@ cmp -s "$H/config.yaml" "$SANDBOX/cfg.before" || fail "step 3: config.yaml chang
 OUT="$(inst "${ARGS[@]}" --hermes-profiles 2>&1)"; RC=$?
 [ "$RC" -eq 0 ] || fail "step 4: exit $RC: $OUT"
 printf 'model:\n  default: %s\n  provider: custom\n' "$SENT" >"$SANDBOX/model.expected"
-printf 'terminal:\n  client_env_passthrough: [HANDOFF_HARNESS, HANDOFF_MODEL, GIT_CONFIG_PARAMETERS]\n' >"$SANDBOX/env.expected"
+printf 'terminal:\n  client_env_passthrough:\n    - HANDOFF_HARNESS\n    - HANDOFF_MODEL\n    - GIT_CONFIG_PARAMETERS\n' >"$SANDBOX/env.expected"
 for n in review run close; do
   d="$H/profiles/$n"
   cmp -s "$KIT/hermes/profiles/$n/SOUL.md" "$d/SOUL.md" || fail "step 4: $n SOUL differs"
   if [ "$n" = review ]; then
     cmp -s "$SANDBOX/model.expected" "$d/config.yaml" || fail "step 4: $n config.yaml is not the model block"
   else
-    { cat "$SANDBOX/model.expected"; printf '\n'; cat "$SANDBOX/env.expected"; } >"$SANDBOX/$n.expected"
+    { cat "$SANDBOX/model.expected"; cat "$SANDBOX/env.expected"; } >"$SANDBOX/$n.expected"
     cmp -s "$SANDBOX/$n.expected" "$d/config.yaml" || fail "step 4: $n config.yaml is not model block plus client env allowlist"
   fi
   [ -n "$(find "$d/config.yaml" -perm 600)" ] || fail "step 4: $n config.yaml is not mode 600"

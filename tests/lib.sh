@@ -28,7 +28,7 @@ set -uo pipefail
 # plain `git` command run directly by a case (e.g. sandbox_init's own setup push) is
 # not — it would hit the real pre-push hook and refuse. Strip them here, once, for the
 # whole harness process.
-unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 HANDOFF_HARNESS HANDOFF_MODEL
+unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_PARAMETERS HANDOFF_HARNESS HANDOFF_MODEL
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAKES_DIR="$REPO_ROOT/tests/fakes"

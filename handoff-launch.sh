@@ -1869,6 +1869,41 @@ if [ "$BACKEND" = "hermes" ]; then
   # The profile's own model is the default. A --model on the command line is passed as
   # hermes -m and wins; the brief's model (a Claude name like opus) is never passed.
   if [ "$PROFILE" = "default" ]; then _hcfg="$HOME/.hermes/config.yaml"; else _hcfg="$HOME/.hermes/profiles/$PROFILE/config.yaml"; fi
+  if [ "$MODE" = "run" ] || [ "$MODE" = "resume" ] || [ "$MODE" = "close" ]; then
+    missing="$(python3 - "$_hcfg" "$PROFILE" <<'PY'
+import os, re, sys
+path, profile = sys.argv[1:]
+required = ('HANDOFF_HARNESS', 'HANDOFF_MODEL', 'GIT_CONFIG_PARAMETERS')
+try:
+    lines = open(path, encoding='utf-8').read().splitlines()
+except OSError:
+    lines = []
+section = []
+terminal_indent = None
+passthrough_indent = None
+for line in lines:
+    if not line.strip() or line.lstrip().startswith('#'):
+        continue
+    indent = len(line) - len(line.lstrip())
+    if re.match(r'^\s*terminal\s*:', line):
+        terminal_indent = indent
+        passthrough_indent = None
+        continue
+    if terminal_indent is not None and indent <= terminal_indent:
+        terminal_indent = None
+        passthrough_indent = None
+    if terminal_indent is not None and re.match(r'^\s*client_env_passthrough\s*:', line):
+        passthrough_indent = indent
+        section.append(line)
+        continue
+    if passthrough_indent is not None and indent > passthrough_indent:
+        section.append(line)
+missing = [name for name in required if not any(re.search(r'(?<![A-Z0-9_])' + name + r'(?![A-Z0-9_])', line) for line in section)]
+print(' '.join(missing))
+PY
+)"
+    [ -z "$missing" ] || die "hermes profile $PROFILE is missing client_env_passthrough names: $missing; run install.sh --hermes-profiles"
+  fi
   PROFILE_MODEL="$(awk '/^model:/{f=1;next} f&&/^[^ ]/{f=0} f&&/^  default:/{sub(/^  default:[ ]*/,"");print;exit}' "$_hcfg" 2>/dev/null || true)"
   if [ -n "$MODEL_ARG" ]; then EFFECTIVE_MODEL="$MODEL_ARG"; else EFFECTIVE_MODEL="${PROFILE_MODEL:-<profile default>}"; fi
   # A run leaves commits, so it is the one stage that cannot be retried blind,
@@ -2034,6 +2069,10 @@ else
   export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:+$PYTEST_ADDOPTS }-q --tb=short"
   install_git_hooks "$BRIEF_REPO"
   export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$HOOKS_DIR"
+  if [ "$BACKEND" = hermes ]; then
+    HOOKS_PARAMETER="'core.hooksPath=$HOOKS_DIR'"
+    export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }$HOOKS_PARAMETER"
+  fi
   if [ "$BACKEND" = "claude" ] && ! /usr/bin/grep -q '"includeCoAuthoredBy": *false' "$HOME/.claude/settings.json" 2>/dev/null; then
     printf 'NOTE: ~/.claude/settings.json lacks "includeCoAuthoredBy": false — the hook strips the line anyway, but set it so claude stops offering it.\n' >&2
   fi

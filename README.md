@@ -78,8 +78,9 @@ It writes, all under `$HOME`:
   this kit;
 - `~/.claude/skills/<name>/`: each skill under `skills/`, replaced whole;
 - `~/.config/systemd/user/handoff-watchdog@.service` and `.timer`, copied from `systemd/`;
-- `~/.hermes/profiles/review`, `run` and `close`: only with `--hermes-profiles`, each one
-  only when it does not exist yet.
+- `~/.hermes/profiles/review`, `run` and `close`: only with `--hermes-profiles`; missing
+  profiles are created, and the run/close profiles gain the required client environment
+  allowlist without changing their other config content.
 
 A flag left out keeps the value `config.env` already has. The environment's `VAULT`,
 `HANDOFF_DEFAULTS` and `HANDOFF_PROJECTS` are ignored by the installer. Run it again after
@@ -258,10 +259,16 @@ The kit ships a generic `SOUL.md` for each of the three profiles, under
 `hermes/profiles/`. The review one holds the whole review: a hermes review gets the bare
 brief, with no wrapper and no skill, so the procedure and the output block that the next
 stage parses reach the session only through that SOUL. The run one defers to the report
-format in the run prompt. `bash install.sh --hermes-profiles` creates each missing profile
-from them, with the `model:` block of `~/.hermes/config.yaml` copied into its `config.yaml`
-(mode 600). A profile that already exists, whatever it holds, is kept and never written to.
-Without the flag, nothing under `~/.hermes` is read or written.
+format in the run prompt. Hermes forwards only allowlisted variables to the agent's shell,
+so the run and close profiles list `HANDOFF_HARNESS`, `HANDOFF_MODEL` and
+`GIT_CONFIG_PARAMETERS` in `terminal.client_env_passthrough`. `bash install.sh
+--hermes-profiles` creates missing profiles, copying the `model:` block of
+`~/.hermes/config.yaml` into each new `config.yaml` (mode 600). It also adds the required
+allowlist to an existing run or close profile when needed, without changing any other
+config content; review and final-review profiles are not upgraded this way. Re-run the
+installer after upgrading the kit. The launcher refuses a run, close or resume profile
+that lacks any required name, and tells you to run the installer. Without the flag,
+nothing under `~/.hermes` is read or written.
 
 The flag never writes credentials: give each new profile the `.env` or `auth.json` its
 provider needs. Hermes has no read-only mode, so the review and close profiles are

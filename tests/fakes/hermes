@@ -2,6 +2,7 @@
 """Offline notes-stage CLI: reject slash dispatch before accepting a task."""
 import json
 import os
+import subprocess
 import sys
 
 argv = sys.argv[1:]
@@ -11,4 +12,12 @@ with open(os.path.join(os.environ['FAKE_STATE_DIR'], 'hermes.jsonl'), 'a') as st
 if prompt.lstrip().startswith('/'):
     print('Unknown command: ' + prompt.split()[0], file=sys.stderr)
     sys.exit(2)
+if os.environ.get('FAKE_HERMES_COMMIT') == '1':
+    env = {name: os.environ[name] for name in
+           ('PATH', 'HOME', 'HANDOFF_HARNESS', 'HANDOFF_MODEL', 'GIT_CONFIG_PARAMETERS')
+           if name in os.environ}
+    with open('hermes-attribution.txt', 'a') as stream:
+        stream.write('commit\n')
+    subprocess.run(['git', 'add', 'hermes-attribution.txt'], env=env, check=True)
+    subprocess.run(['git', 'commit', '-m', 'fake hermes change'], env=env, check=True)
 print('Offline task accepted; no state changes performed.')

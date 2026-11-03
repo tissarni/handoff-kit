@@ -7,7 +7,7 @@ sandbox_init
 cp "$FAKES_DIR/hermes-run-contract" "$SANDBOX/bin/hermes"
 chmod +x "$SANDBOX/bin/hermes"
 mkdir -p "$SANDBOX/home/.hermes/profiles/run"
-printf 'model:\n  default: profile/run-model\nagent:\n  reasoning_effort: high\n' >"$SANDBOX/home/.hermes/profiles/run/config.yaml"
+printf 'model:\n  default: profile/run-model\nagent:\n  reasoning_effort: high\nterminal:\n  client_env_passthrough: [HANDOFF_HARNESS, HANDOFF_MODEL, GIT_CONFIG_PARAMETERS]\n' >"$SANDBOX/home/.hermes/profiles/run/config.yaml"
 BRIEF="$(make_brief 'sub with spaces' 'brief with spaces.md' ready)"
 cp "$BRIEF" "$SANDBOX/brief-original"
 NOTE="$SANDBOX/continuation with spaces.txt"

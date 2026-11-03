@@ -22,7 +22,7 @@ prepare_closed_phase() {  # $1 = name, $2 = publication owner
   is_broken() { [ -f "$STATUS" ] && /usr/bin/grep -q '^NEEDS YOU' "$STATUS"; }
   wait_for 120 is_broken || fail "$name: phase did not break: $(head -1 "$STATUS" 2>/dev/null)"
   [ "$(state_of "$BRIEF")" = closed ] || fail "$name: expected closed brief, got $(state_of "$BRIEF")"
-  rm -f "$SANDBOX/state/gh-pr-url"
+  rm -f "$SANDBOX/state/gh-pr-url" "$SANDBOX/state/gh.log"
 }
 
 add_unpushed_commit() {

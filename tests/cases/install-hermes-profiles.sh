@@ -45,10 +45,16 @@ cmp -s "$H/config.yaml" "$SANDBOX/cfg.before" || fail "step 3: config.yaml chang
 OUT="$(inst "${ARGS[@]}" --hermes-profiles 2>&1)"; RC=$?
 [ "$RC" -eq 0 ] || fail "step 4: exit $RC: $OUT"
 printf 'model:\n  default: %s\n  provider: custom\n' "$SENT" >"$SANDBOX/model.expected"
+printf 'terminal:\n  client_env_passthrough:\n    - HANDOFF_HARNESS\n    - HANDOFF_MODEL\n    - GIT_CONFIG_PARAMETERS\n' >"$SANDBOX/env.expected"
 for n in review run close; do
   d="$H/profiles/$n"
   cmp -s "$KIT/hermes/profiles/$n/SOUL.md" "$d/SOUL.md" || fail "step 4: $n SOUL differs"
-  cmp -s "$SANDBOX/model.expected" "$d/config.yaml" || fail "step 4: $n config.yaml is not the model block"
+  if [ "$n" = review ]; then
+    cmp -s "$SANDBOX/model.expected" "$d/config.yaml" || fail "step 4: $n config.yaml is not the model block"
+  else
+    { cat "$SANDBOX/model.expected"; cat "$SANDBOX/env.expected"; } >"$SANDBOX/$n.expected"
+    cmp -s "$SANDBOX/$n.expected" "$d/config.yaml" || fail "step 4: $n config.yaml is not model block plus client env allowlist"
+  fi
   [ -n "$(find "$d/config.yaml" -perm 600)" ] || fail "step 4: $n config.yaml is not mode 600"
   has "installed hermes profile $n" "step 4"
 done
@@ -64,13 +70,16 @@ cmp -s "$H/config.yaml" "$SANDBOX/cfg.before" || fail "step 4: ~/.hermes/config.
 # 5. second run keeps edits
 echo edited >>"$H/profiles/review/SOUL.md"
 echo 'edited: 1' >>"$H/profiles/run/config.yaml"
+cp "$H/profiles/run/config.yaml" "$SANDBOX/run.edited"
 echo 'kept: yes' >>"$H/profiles/final-review/config.yaml"
 OUT="$(inst "${ARGS[@]}" --hermes-profiles 2>&1)"; RC=$?
 [ "$RC" -eq 0 ] || fail "step 5: exit $RC: $OUT"
 for n in review run close; do has "kept hermes profile $n" "step 5"; done
 hasnt 'installed hermes profile' "step 5"
 [ "$(tail -n 1 "$H/profiles/review/SOUL.md")" = edited ] || fail "step 5: review SOUL edit lost"
-[ "$(tail -n 1 "$H/profiles/run/config.yaml")" = 'edited: 1' ] || fail "step 5: run config edit lost"
+for line in 'edited: 1' HANDOFF_HARNESS HANDOFF_MODEL GIT_CONFIG_PARAMETERS; do
+  /usr/bin/grep -qF "$line" "$H/profiles/run/config.yaml" || fail "step 5: run config line lost or allowlist missing: $line"
+done
 [ "$(tail -n 1 "$H/profiles/final-review/config.yaml")" = 'kept: yes' ] || fail "step 5: final-review profile edit lost"
 [ ! -e "$H/profiles/final-review/SOUL.md" ] || fail "step 5: final-review unexpectedly has SOUL.md"
 
@@ -80,7 +89,8 @@ printf 'other: 1\n' >"$H/config.yaml"
 OUT="$(inst "${ARGS[@]}" --hermes-profiles 2>&1)"; RC=$?
 [ "$RC" -eq 0 ] || fail "step 6: exit $RC: $OUT"
 cmp -s "$KIT/hermes/profiles/close/SOUL.md" "$H/profiles/close/SOUL.md" || fail "step 6: close SOUL differs"
-[ ! -e "$H/profiles/close/config.yaml" ] || fail "step 6: close has a config.yaml"
-has 'NOTE: hermes profile close has no config.yaml' "step 6"
+for line in HANDOFF_HARNESS HANDOFF_MODEL GIT_CONFIG_PARAMETERS; do
+  /usr/bin/grep -qF "$line" "$H/profiles/close/config.yaml" || fail "step 6: close config lacks $line"
+done
 
 echo ok

@@ -78,8 +78,9 @@ It writes, all under `$HOME`:
   this kit;
 - `~/.claude/skills/<name>/`: each skill under `skills/`, replaced whole;
 - `~/.config/systemd/user/handoff-watchdog@.service` and `.timer`, copied from `systemd/`;
-- `~/.hermes/profiles/review`, `run` and `close`: only with `--hermes-profiles`, each one
-  only when it does not exist yet.
+- `~/.hermes/profiles/review`, `run` and `close`: only with `--hermes-profiles`; missing
+  profiles are created, and the run/close profiles gain the required client environment
+  allowlist without changing their other config content.
 
 A flag left out keeps the value `config.env` already has. The environment's `VAULT`,
 `HANDOFF_DEFAULTS` and `HANDOFF_PROJECTS` are ignored by the installer. Run it again after
@@ -144,7 +145,8 @@ interface. Paths passed to `--repo` are local Git repositories; forge commands t
 - `handoff-policy finalize --repository <owner/name> --plan <plan> --branch <branch>
   [--base dev]` — checks readiness and merges one reviewed feature head. Exit 0 means
   verified completion; exit 1 means refusal; exit 3 means an ambiguous merge outcome that
-  needs human verification; exit 4 means the merge was verified but branch cleanup failed.
+  needs human verification; exit 4 means the merge was verified but branch cleanup failed;
+  exit 5 means CI is still pending and no mutation was made.
 
 ### Risk and final review
 
@@ -208,6 +210,14 @@ with `PR body not written`, correct the cause, run `handoff-policy pr-body ...`,
 `finalize` command requires the plan's valid final-review evidence and current readiness
 checks. Use `hold`/`release` to pause or resume eligibility at repository or task scope.
 
+When the only remaining obstacle is pending CI, `finalize` exits 5 with
+`handoff-merge: pending: <reason>` before marking a draft ready or attempting a merge.
+The orchestrator waits and retries, logging one `CI PENDING` event per distinct reason.
+`HANDOFF_CI_POLL_S` controls the interval in seconds (default 60); plan
+`budgets.ci` bounds the total wait in minutes (default 30). A zero-minute budget makes one
+attempt and immediately holds the plan if CI is still pending. Each synchronous `gh` call
+inside a finalize attempt is unbounded; this wait budget does not interrupt one.
+
 This kit's CI workflow runs the test suite on every push and pull request; it has no
 deployment job. Merging into `dev` may trigger workflows configured by the repository—check
 those triggers before enabling auto-merge. The kit does not change repository protections or
@@ -249,10 +259,16 @@ The kit ships a generic `SOUL.md` for each of the three profiles, under
 `hermes/profiles/`. The review one holds the whole review: a hermes review gets the bare
 brief, with no wrapper and no skill, so the procedure and the output block that the next
 stage parses reach the session only through that SOUL. The run one defers to the report
-format in the run prompt. `bash install.sh --hermes-profiles` creates each missing profile
-from them, with the `model:` block of `~/.hermes/config.yaml` copied into its `config.yaml`
-(mode 600). A profile that already exists, whatever it holds, is kept and never written to.
-Without the flag, nothing under `~/.hermes` is read or written.
+format in the run prompt. Hermes forwards only allowlisted variables to the agent's shell,
+so the run and close profiles list `HANDOFF_HARNESS`, `HANDOFF_MODEL` and
+`GIT_CONFIG_PARAMETERS` in `terminal.client_env_passthrough`. `bash install.sh
+--hermes-profiles` creates missing profiles, copying the `model:` block of
+`~/.hermes/config.yaml` into each new `config.yaml` (mode 600). It also adds the required
+allowlist to an existing run or close profile when needed, without changing any other
+config content; review and final-review profiles are not upgraded this way. Re-run the
+installer after upgrading the kit. The launcher refuses a run, close or resume profile
+that lacks any required name, and tells you to run the installer. Without the flag,
+nothing under `~/.hermes` is read or written.
 
 The flag never writes credentials: give each new profile the `.env` or `auth.json` its
 provider needs. Hermes has no read-only mode, so the review and close profiles are
@@ -298,6 +314,7 @@ Every Claude stage starts with `ENABLE_CLAUDEAI_MCP_SERVERS=false` and with user
   forwarded to each run. In `supervisor` mode the driver also leaves branch and PR
   publication to the supervisor. Recovery commands carry the selected owner; `tick` and
   `stop` recover it from the plan's trusted START/RESUME event, not brief or Issue prose.
+  With runner ownership, the push/PR backstop also runs when a phase finishes, including on resume.
 - **Exits:** 0 ok, or broke and said so; 1 usage or state error; 2 a pre-flight check failed
   and nothing launched.
 - **Environment:** `HANDOFF_LIMIT_WAIT` (1800 s by default), `HANDOFF_ORCH_ALLOW_CONCURRENT=1`

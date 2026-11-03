@@ -284,6 +284,7 @@ out = {
   'PLAN_PROJECT': scalar('project'), 'PLAN_SETUP': scalar('setup'),
   'B_REVIEW': bget('review'), 'B_REVISE': bget('revise'), 'B_RUN': bget('run'),
   'B_CLOSE': bget('close'), 'B_DEBRIEF': bget('debrief'), 'B_PHASE': bget('phase'), 'B_HEART': bget('heartbeat'),
+  'B_CI': bget('ci'),
 }
 for k, v in out.items(): print(f'{k}={shlex.quote(v)}')
 print(f'PLAN_BRIEF_COUNT={len(briefs)}')
@@ -1473,6 +1474,12 @@ driver() {
 # Every brief of the phase is closed. The driver's own end, and resume's when a broken or
 # paused phase has no brief left to run (begin).
 phase_done() {
+  if [ "$PUBLICATION_OWNER" = "runner" ]; then
+    push_branch "${PLAN_BRIEFS[-1]}"
+    ensure_pr "${PLAN_BRIEFS[-1]}"
+  else
+    log_event "PUBLICATION held for supervisor at phase end"
+  fi
   log_event "PHASE DONE $((PLAN_PHASE_IDX+1)) — $PLAN_PHASE_NAME"
   # the last phase closes the plan: `done`, not `phase-done` (the status skill's
   # "review and merge the PR" step keys on it)
@@ -1554,13 +1561,28 @@ phase_done() {
 
 auto_finalize() {  # $1 = merge helper, $2 = reviewed head
   local helper="$1" reviewed="$2" slug out rc merge_sha cleanup reason cleanup_event clf
+  local ci_budget="${B_CI:-30}" poll="${HANDOFF_CI_POLL_S:-60}" started="$SECONDS" elapsed remaining wait_s last_reason=""
+  [[ "$poll" =~ ^[0-9]+$ ]] || poll=60
   slug="$(github_repo_slug)" || slug=""
   if [ -z "$slug" ]; then
     rc=1; out="finalize refused: GitHub repository identity unavailable"
   elif [ -z "${GH_TOKEN:-}" ] || [ -z "${GH_HOST:-}" ]; then
     rc=1; out="finalize refused: GH_TOKEN and GH_HOST are required"
   else
-    if out="$(python3 "$helper" finalize --repository "$slug" --plan "$PLAN" --branch "$WANT_BRANCH" --base "$BASE_BRANCH" 2>&1)"; then rc=0; else rc=$?; fi
+    while :; do
+      if out="$(python3 "$helper" finalize --repository "$slug" --plan "$PLAN" --branch "$WANT_BRANCH" --base "$BASE_BRANCH" 2>&1)"; then rc=0; else rc=$?; fi
+      [ "$rc" -eq 5 ] || break
+      reason="$(printf '%s\n' "$out" | tail -1 | sed 's/^handoff-merge: pending: //')"
+      [ "$reason" = "$last_reason" ] || { log_event "CI PENDING ${reviewed:0:7} — $reason"; last_reason="$reason"; }
+      elapsed=$((SECONDS-started)); remaining=$((ci_budget*60-elapsed))
+      if [ "$remaining" -le 0 ]; then
+        rc=1
+        out="handoff-merge: pending: CI still pending after $((elapsed/60)) min: $reason"
+        break
+      fi
+      wait_s="$poll"; [ "$wait_s" -le "$remaining" ] || wait_s="$remaining"
+      sleep "$wait_s"
+    done
   fi
   case "$rc" in
     0|4)
@@ -1589,7 +1611,8 @@ auto_finalize() {  # $1 = merge helper, $2 = reviewed head
       ;;
   esac
   case "$rc" in
-    1) reason="$(printf '%s\n' "$out" | tail -1 | sed 's/^handoff-merge: //')"; reason="auto-merge refused — ${reason:-reason unavailable}" ;;
+    1) reason="$(printf '%s\n' "$out" | tail -1 | sed 's/^handoff-merge: //; s/^pending: //')"; reason="auto-merge refused — ${reason:-reason unavailable}" ;;
+    5) reason="$(printf '%s\n' "$out" | tail -1 | sed 's/^handoff-merge: pending: //')"; reason="auto-merge refused — CI still pending: ${reason:-reason unavailable}" ;;
     *) reason="merge outcome ambiguous — verify before resuming" ;;
   esac
   # Event and status first: the plan state is the commit point readers poll.

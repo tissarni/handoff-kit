@@ -8,8 +8,8 @@
 #   ~/.local/bin/handoff-launch, handoff-orchestrate, brief-check   symlinks into this kit
 #   ~/.claude/skills/<name>/        each skill under skills/, replaced whole
 #   ~/.config/systemd/user/handoff-watchdog@.service and .timer   copied from systemd/
-#   ~/.hermes/profiles/{review,run,close,final-review} only with --hermes-profiles: each missing profile
-#                                  is built from hermes/profiles/, an existing one is never touched
+#   ~/.hermes/profiles/{review,run,close,final-review} only with --hermes-profiles: missing profiles
+#                                  are built from hermes/profiles/; run/close gain the required env allowlist
 # A flag left out keeps the value config.env already has. The environment's VAULT,
 # HANDOFF_DEFAULTS and HANDOFF_PROJECTS are ignored here: the file must not take a value
 # that one shell happened to export. Nothing is enabled: start/resume arm each plan's timer.
@@ -94,10 +94,86 @@ cp "$KIT/systemd/handoff-watchdog@.service" "$KIT/systemd/handoff-watchdog@.time
 if command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload >/dev/null 2>&1; then echo "watchdog units: $units (reloaded)"
 else echo "NOTE: no systemd user session — units written to $units, not reloaded"; fi
 if [ "$hermes" = 1 ]; then
+  ensure_client_env() {
+    python3 - "$1" <<'PY'
+import os, re, sys
+path = sys.argv[1]
+required = ('HANDOFF_HARNESS', 'HANDOFF_MODEL', 'GIT_CONFIG_PARAMETERS')
+try:
+    text = open(path, encoding='utf-8').read()
+except FileNotFoundError:
+    text = ''
+lines = text.splitlines(True)
+terminal = next((i for i, line in enumerate(lines) if re.match(r'^terminal\s*:', line)), None)
+key = None
+if terminal is not None:
+    base = len(lines[terminal]) - len(lines[terminal].lstrip())
+    for i in range(terminal + 1, len(lines)):
+        line = lines[i]
+        if line.strip() and not line.lstrip().startswith('#'):
+            indent = len(line) - len(line.lstrip())
+            if indent <= base:
+                break
+            if re.match(r'^\s*client_env_passthrough\s*:', line):
+                key = i
+                break
+if key is None:
+    block = '  client_env_passthrough:\n' + ''.join('    - %s\n' % name for name in required)
+    if terminal is not None:
+        base = len(lines[terminal]) - len(lines[terminal].lstrip())
+        end = terminal + 1
+        while end < len(lines):
+            candidate = lines[end]
+            if candidate.strip() and not candidate.lstrip().startswith('#') and len(candidate) - len(candidate.lstrip()) <= base:
+                break
+            end += 1
+        lines[end:end] = [block]
+        text = ''.join(lines)
+    else:
+        if text and not text.endswith('\n'):
+            text += '\n'
+        text += 'terminal:\n' + block
+else:
+    line = lines[key]
+    indent = len(line) - len(line.lstrip())
+    m = re.search(r'\[([^]]*)\]', line)
+    if m:
+        values = [v.strip().strip('\"\'') for v in m.group(1).split(',') if v.strip()]
+        values.extend(name for name in required if name not in values)
+        lines[key] = line[:m.start(1)] + ', '.join(values) + line[m.end(1):]
+    else:
+        end = key + 1
+        while end < len(lines):
+            candidate = lines[end]
+            if candidate.strip() and not candidate.lstrip().startswith('#') and len(candidate) - len(candidate.lstrip()) <= indent:
+                break
+            end += 1
+        present = set()
+        for row in lines[key + 1:end]:
+            present.update(re.findall(r'\bHANDOFF_HARNESS\b|\bHANDOFF_MODEL\b|\bGIT_CONFIG_PARAMETERS\b', row))
+        pad = ' ' * (indent + 2)
+        lines[end:end] = [pad + '- ' + name + '\n' for name in required if name not in present]
+    text = ''.join(lines)
+with open(path, 'w', encoding='utf-8', newline='') as f:
+    f.write(text)
+PY
+  }
   hp="$HOME/.hermes/profiles"; made=0
   for n in review run close final-review; do
     d="$hp/$n"
-    if [ -e "$d" ] || [ -L "$d" ]; then echo "kept hermes profile $n: $d exists"; continue; fi
+    if [ -e "$d" ] || [ -L "$d" ]; then
+      if [ "$n" = run ] || [ "$n" = close ]; then
+        mkdir -p "$d"
+        cfg="$d/config.yaml"
+        before="$(test -f "$cfg" && cksum "$cfg" || true)"
+        ensure_client_env "$cfg"
+        after="$(cksum "$cfg")"
+        if [ "$before" != "$after" ]; then echo "updated hermes profile $n: added client_env_passthrough"; else echo "kept hermes profile $n: $d exists"; fi
+      else
+        echo "kept hermes profile $n: $d exists"
+      fi
+      continue
+    fi
     mkdir -p "$hp"; t="$hp/.$n.tmp.$$"; rm -rf "$t"; mkdir "$t"
     if [ "$n" != final-review ]; then cp "$KIT/hermes/profiles/$n/SOUL.md" "$t/SOUL.md"; fi
     # The model: block only (it can hold a provider URL or a key): never printed, mode 600.
@@ -105,6 +181,8 @@ if [ "$hermes" = 1 ]; then
       ( umask 077; awk '/^model:/{f=1;print;next} f&&/^[^ ]/{f=0} f{print}' "$HOME/.hermes/config.yaml" >"$t/config.yaml" )
       chmod 600 "$t/config.yaml"; nocfg=0
     else nocfg=1; fi
+    if [ "$n" = run ] || [ "$n" = close ]; then ensure_client_env "$t/config.yaml"; nocfg=0; fi
+    if [ "$n" = run ] || [ "$n" = close ]; then chmod 600 "$t/config.yaml"; fi
     # Re-test right before the rename: a plain mv would move the temp dir into a directory that appeared meanwhile.
     if [ -e "$d" ] || [ -L "$d" ]; then rm -rf "$t"; echo "kept hermes profile $n: $d exists"; continue; fi
     mv "$t" "$d"; made=1; echo "installed hermes profile $n"

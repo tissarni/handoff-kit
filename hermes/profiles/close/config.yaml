@@ -1,0 +1,5 @@
+terminal:
+  client_env_passthrough:
+    - HANDOFF_HARNESS
+    - HANDOFF_MODEL
+    - GIT_CONFIG_PARAMETERS

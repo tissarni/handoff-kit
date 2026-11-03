@@ -57,9 +57,23 @@ cat >"$SANDBOX/home/.hermes/profiles/run/config.yaml" <<'EOF'
 terminal:
   client_env_passthrough: [HANDOFF_HARNESS, HANDOFF_MODEL, GIT_CONFIG_PARAMETERS]
 EOF
+commits_before="$(git -C "$REPO" rev-list --count HEAD)"
 OUT="$(run_launch resume "$BRIEF" --session s --note "$NOTE" --backend hermes 2>&1)"; RC=$?
 [ "$RC" -eq 1 ] || fail "fake hermes should stop without a report, got $RC: $OUT"
-assert_eq "$(git -C "$REPO" log -1 --format=%B | git interpret-trailers --parse | /usr/bin/grep -c '^Harness: hermes$')" 1
+assert_eq "$(git -C "$REPO" rev-list --count HEAD)" "$((commits_before + 1))" 'resume commit must run with forwarded hook config'
+TRAILERS="$(git -C "$REPO" log -1 --format=%B | git interpret-trailers --parse)"
+printf '%s\n' "$TRAILERS" | /usr/bin/grep -q '^Harness: hermes$' || fail "resume missing Harness trailer: $TRAILERS"
+printf '%s\n' "$TRAILERS" | /usr/bin/grep -q '^Model: <profile default>$' || fail "resume missing Model trailer: $TRAILERS"
+
+# Close uses the close profile and refuses before invoking Hermes when it is incomplete.
+mkdir -p "$SANDBOX/home/.hermes/profiles/close"
+printf 'terminal:\n  client_env_passthrough: [HANDOFF_HARNESS, HANDOFF_MODEL]\n' >"$SANDBOX/home/.hermes/profiles/close/config.yaml"
+printf 'report fixture\n' >"${BRIEF%.md}.report.md"
+before="$(wc -l <"$SANDBOX/state/hermes.jsonl")"
+OUT="$(run_launch close "$BRIEF" --backend hermes 2>&1)"; RC=$?
+[ "$RC" -ne 0 ] || fail 'close accepted incomplete profile'
+[[ "$OUT" == *GIT_CONFIG_PARAMETERS* && "$OUT" == *'install.sh --hermes-profiles'* ]] || fail "close preflight omitted missing name/fix: $OUT"
+assert_eq "$(wc -l <"$SANDBOX/state/hermes.jsonl")" "$before"
 
 # Claude keeps the existing environment config path and does not receive the new variable.
 # The fake records its environment snapshot when asked, while the launcher still uses its original config.

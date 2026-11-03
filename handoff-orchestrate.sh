@@ -1474,6 +1474,12 @@ driver() {
 # Every brief of the phase is closed. The driver's own end, and resume's when a broken or
 # paused phase has no brief left to run (begin).
 phase_done() {
+  if [ "$PUBLICATION_OWNER" = "runner" ]; then
+    push_branch "${PLAN_BRIEFS[-1]}"
+    ensure_pr "${PLAN_BRIEFS[-1]}"
+  else
+    log_event "PUBLICATION held for supervisor at phase end"
+  fi
   log_event "PHASE DONE $((PLAN_PHASE_IDX+1)) — $PLAN_PHASE_NAME"
   # the last phase closes the plan: `done`, not `phase-done` (the status skill's
   # "review and merge the PR" step keys on it)

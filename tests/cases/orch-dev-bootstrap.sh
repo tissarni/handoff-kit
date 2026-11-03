@@ -22,6 +22,7 @@ import json, os, pathlib, subprocess, sys
 root=pathlib.Path(os.environ['FAKE_STATE_DIR'])
 state=json.loads((root/'bootstrap.json').read_text())
 a=sys.argv[1:]; endpoint=next((x for x in a if x.startswith('repos/')), '')
+if a == ['--version']: print('gh version 2.103.3 (2026-01-01)'); sys.exit(0)
 method=a[a.index('-X')+1] if '-X' in a else 'GET'
 with (root/'forge.log').open('a') as f: f.write(method+' '+endpoint+'\n')
 if endpoint == 'repos/acme/widget': print(json.dumps({'full_name':'acme/widget'}))

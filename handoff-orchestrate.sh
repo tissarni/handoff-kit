@@ -494,11 +494,16 @@ complete_verified_merge() {  # $1 = verified merge commit
 }
 
 retry_awaiting_merge() {
-  local slug reviewed helper out kind first second effective task local_head clf self
+  local slug reviewed helper out kind first second effective task local_head clf self reason
   slug="$(github_repo_slug)" || die "still awaiting merge into $BASE_BRANCH: merge verification requires a GitHub origin URL"
   reviewed="$(fm_scalar "$PLAN" final-reviewed-head)"
   [[ "$reviewed" =~ ^[0-9a-fA-F]{40}$ ]] || die "still awaiting merge into $BASE_BRANCH: plan has no valid final-reviewed-head"
   helper="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-merge.py"
+
+  if [ "$(python3 "$helper" policy-get --repo "$REPO" 2>/dev/null || true)" = auto ] \
+     && [ "$(repo_forge)" = github ]; then
+    reason="$(gh_version_check)" || die "$reason"
+  fi
 
   # A completed human merge wins over every retry precondition; never finalize it twice.
   out="$(python3 "$helper" merge-state --repository "$slug" --branch "$WANT_BRANCH" --base "$BASE_BRANCH" 2>&1)" || die "still awaiting merge into $BASE_BRANCH: ${out##*$'\n'}"
@@ -837,14 +842,40 @@ stage_scan() {
   return 0
 }
 
+gh_version_check() {
+  local version line major minor
+  if ! command -v gh >/dev/null 2>&1; then
+    printf 'preflight:gh — gh >= 2.48 required, found none\n'
+    return 1
+  fi
+  line="$(gh --version 2>/dev/null | head -n 1 || true)"
+  if [[ "$line" =~ ^gh[[:space:]]version[[:space:]]([0-9]+)\.([0-9]+)\.([0-9]+)([[:space:]]|$) ]]; then
+    major=$((10#${BASH_REMATCH[1]}))
+    minor=$((10#${BASH_REMATCH[2]}))
+    if [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 48 ]; }; then
+      return 0
+    fi
+    version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+  else
+    version=unknown
+  fi
+  printf 'preflight:gh — gh >= 2.48 required, found %s\n' "$version"
+  return 1
+}
+
 preflight() {  # $1 = brief
-  local brief="$1" st bin min_gb free_gb reason
+  local brief="$1" st bin min_gb free_gb reason merge_helper merge_policy
   [ -f "$brief" ] || { printf 'preflight:brief — not found: %s\n' "$brief"; return 1; }
   [ -d "$REPO" ]  || { printf 'preflight:repo — not a directory: %s\n' "$REPO"; return 1; }
   # 1. no other launcher stage alive on the same checkout (stage_scan). Env override
   #    HANDOFF_ORCH_ALLOW_CONCURRENT=1 skips the scan only.
   if [ "${HANDOFF_ORCH_ALLOW_CONCURRENT:-0}" != "1" ]; then
     stage_scan || return 1
+  fi
+  merge_helper="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-merge.py"
+  merge_policy="$(python3 "$merge_helper" policy-get --repo "$REPO" 2>/dev/null || true)"
+  if [ "$merge_policy" = auto ] && [ "$(repo_forge)" = github ]; then
+    reason="$(gh_version_check)" || { printf '%s\n' "$reason"; return 1; }
   fi
   # 2. disk (a root shared with docker fills up; ENOSPC looks like a silent stall)
   min_gb="$(disk_min_gb)"; min_gb="${min_gb:-5}"

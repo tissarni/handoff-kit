@@ -60,6 +60,7 @@ git -C "$SANDBOX/repo_under.test" remote set-url origin https://github.com/test/
 cat >"$SANDBOX/bin/gh" <<'GH'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = --version ]; then echo 'gh version 2.103.3 (2026-01-01)'; exit 0; fi
 if [ "${1:-}" = api ]; then
   case "$*" in
     *'/pulls/'[0-9]*)

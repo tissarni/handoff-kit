@@ -17,6 +17,8 @@ kit's own word for that repo.
   standing in otherwise.
 - An agent CLI: `claude` by default, or `hermes` or `devin`.
 - `gh` for a GitHub origin, or `glab` for a GitLab one.
+- GitHub auto-merge requires `gh >= 2.48`; an older or unparseable version makes
+  orchestration preflight refuse with `preflight:gh — gh >= 2.48 required, found <version>`.
 - Optionally, for the watchdog, a systemd user session (`systemctl`, `systemd-escape`) on
   Linux, or a GUI login session (`launchctl`) on macOS; and `curl` with `notify.env` for
   messages.

@@ -164,6 +164,22 @@ _sbx_env() {
   [ -n "${HANDOFF_FINAL_REVIEW_TIMEOUT+x}" ] && SBX_ENV+=("HANDOFF_FINAL_REVIEW_TIMEOUT=$HANDOFF_FINAL_REVIEW_TIMEOUT")
   [ -n "${HANDOFF_CI_POLL_S+x}" ] && SBX_ENV+=("HANDOFF_CI_POLL_S=$HANDOFF_CI_POLL_S")
   [ -n "${PYTEST_ADDOPTS+x}" ] && SBX_ENV+=("PYTEST_ADDOPTS=$PYTEST_ADDOPTS")
+  [ -n "${FAKE_GH_VERSION+x}" ] && SBX_ENV+=("FAKE_GH_VERSION=$FAKE_GH_VERSION")
+}
+
+make_path_without_gh() {   # $1 = destination directory for a PATH with no gh
+  local dest="$1" sys="/usr/local/bin:/usr/bin:/bin" dir tool name
+  case "${OSTYPE:-}" in darwin*) sys="/opt/homebrew/bin:$sys" ;; esac
+  mkdir -p "$dest"
+  for dir in "$SANDBOX/bin" ${sys//:/ }; do
+    [ -d "$dir" ] || continue
+    for tool in "$dir"/*; do
+      [ -f "$tool" ] && [ -x "$tool" ] || continue
+      name="${tool##*/}"
+      [ "$name" = gh ] && continue
+      [ -e "$dest/$name" ] || [ -L "$dest/$name" ] || ln -s "$tool" "$dest/$name"
+    done
+  done
 }
 
 launch() {

@@ -22,6 +22,7 @@ env -i HOME="$SANDBOX/home" PATH="$SANDBOX/bin:/usr/bin:/bin" python3 "$SANDBOX/
 cat >"$SANDBOX/bin/gh" <<'GH'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = --version ]; then echo 'gh version 2.103.3 (2026-01-01)'; exit 0; fi
 printf '%s\n' "$*" >>"$FAKE_STATE_DIR/gh.log"
 if [ "${1:-}" = api ]; then
   shift

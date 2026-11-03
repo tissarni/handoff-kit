@@ -45,6 +45,7 @@ chmod +x "$SANDBOX/bin/setsid" "$SANDBOX/bin/env" "$SANDBOX/bin/claude" "$SANDBO
 # The fake forge records that finalization retained its token, but does not perform a write.
 cat >"$SANDBOX/bin/gh" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then echo 'gh version 2.103.3 (2026-01-01)'; exit 0; fi
 printf '%s\n' "${GH_TOKEN-unset}" >>"$FAKE_STATE_DIR/gh-token.log"
 printf '[]\n'
 SH

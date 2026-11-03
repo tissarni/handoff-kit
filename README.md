@@ -206,9 +206,15 @@ known. Exit 4 means merge succeeded but branch cleanup failed; the plan complete
 warning and the leftover branch can be cleaned up separately. If the orchestrator refuses
 with `PR body not written`, correct the cause, run `handoff-policy pr-body ...`, then
 `handoff-policy finalize ...`, and finally resume the orchestrator to reconcile completion.
-`finalize` alone cannot recover an incomplete body; no automatic retry is performed. The
-`finalize` command requires the plan's valid final-review evidence and current readiness
-checks. Use `hold`/`release` to pause or resume eligibility at repository or task scope.
+Alternatively, after correcting a transient PR-body or finalize refusal, run
+`handoff-orchestrate resume <plan> --retry-merge` to retry the kit's auto-merge path. It
+first verifies whether a human already merged the reviewed head; otherwise it requires
+effective auto policy, a GitHub PR still open at the recorded reviewed head, a `dev` base,
+`GH_TOKEN` and `GH_HOST`, and a local HEAD that still matches the final review. It reuses
+the existing final-review evidence and never runs another review. If the head moved, the
+retry refuses with instructions to reset the plan to `broken` and resume so it receives a
+new final review. `finalize` alone cannot recover an incomplete body; `hold`/`release`
+pause or resume eligibility at repository or task scope.
 
 When the only remaining obstacle is pending CI, `finalize` exits 5 with
 `handoff-merge: pending: <reason>` before marking a draft ready or attempting a merge.

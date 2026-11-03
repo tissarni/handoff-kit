@@ -108,7 +108,8 @@ assert_checkout_held() {
 set_awaiting "$HEAD_SHA"; reset_forge ok
 printf 'head moved\n' >"$SANDBOX/repo_under.test/moved.txt"
 git -C "$SANDBOX/repo_under.test" add moved.txt
-git -C "$SANDBOX/repo_under.test" commit -q -m 'test moved head'
+git -C "$SANDBOX/repo_under.test" -c user.name='Test User' -c user.email=test@example.com commit -q -m 'test moved head'
+[ "$(git -C "$SANDBOX/repo_under.test" rev-parse HEAD)" != "$HEAD_SHA" ] || fail "moved-head setup did not move HEAD"
 : >"$SANDBOX/state/gh.log"
 if OUT="$(run_orch resume "$PLAN" --retry-merge --backend claude --publication-owner supervisor 2>&1)"; then fail "moved head retry unexpectedly succeeded"; fi
 case "$OUT" in *'head moved since the final review'*) ;; *) fail "moved head refusal was unclear: $OUT" ;; esac
@@ -169,6 +170,10 @@ p=sys.argv[1]; s=open(p).read(); s=re.sub(r'^orchestration:.*$', 'orchestration:
 PY
 PLAN_BEFORE="$(sha256sum "$PLAN" | cut -d' ' -f1)"
 : >"$SANDBOX/state/gh.log"
+if OUT="$(run_orch start "$PLAN" --retry-merge --backend claude --publication-owner supervisor 2>&1)"; then fail "start --retry-merge on broken plan unexpectedly succeeded"; fi
+case "$OUT" in *'--retry-merge only applies to resume'*) ;; *) fail "start --retry-merge refusal was unclear: $OUT" ;; esac
+[ "$(sha256sum "$PLAN" | cut -d' ' -f1)" = "$PLAN_BEFORE" ] || fail "start --retry-merge on broken plan edited plan"
+assert_no_forge_writes
 if OUT="$(run_orch resume "$PLAN" --retry-merge --backend claude --publication-owner supervisor 2>&1)"; then fail "broken plan retry unexpectedly succeeded"; fi
 case "$OUT" in *'requires a plan in awaiting-merge state'*) ;; *) fail "broken-plan refusal was unclear: $OUT" ;; esac
 [ "$(sha256sum "$PLAN" | cut -d' ' -f1)" = "$PLAN_BEFORE" ] || fail "broken-plan retry edited plan"

@@ -69,7 +69,7 @@ check('empty jobs preserves pending run',5,fallback=True,runs_status='in_progres
 # Run the real decision function across mark-ready: its second, strict decision must refuse.
 import json, os, pathlib, subprocess, tempfile
 with tempfile.TemporaryDirectory() as tmp:
-    root=pathlib.Path(tmp); repo=root/'repo'; repo.mkdir(); home=root/'home'
+    root=pathlib.Path(tmp).resolve(); repo=root/'repo'; repo.mkdir(); home=root/'home'
     subprocess.run(['git','init','-q','-b','main',str(repo)],check=True)
     subprocess.run(['git','-C',str(repo),'config','user.name','Test'],check=True)
     subprocess.run(['git','-C',str(repo),'config','user.email','test@example.com'],check=True)

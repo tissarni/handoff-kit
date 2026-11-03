@@ -35,6 +35,21 @@ KIT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 USAGE="usage: install.sh [--vault <dir>] [--defaults <path relative to the vault>] [--projects <dir>] [--auto-merge true|false] [--hermes-profiles]"
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 usage() { printf '%s\n' "$USAGE" >&2; exit 2; }
+warn_old_gh() {
+  local line version major minor
+  command -v gh >/dev/null 2>&1 || return 0
+  line="$(gh --version 2>/dev/null | head -n 1 || true)"
+  if [[ "$line" =~ ^gh[[:space:]]version[[:space:]]([0-9]+)\.([0-9]+)\.([0-9]+)([[:space:]]|$) ]]; then
+    major=$((10#${BASH_REMATCH[1]}))
+    minor=$((10#${BASH_REMATCH[2]}))
+    if [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 48 ]; }; then return 0; fi
+    version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+  else
+    version=unknown
+  fi
+  printf 'install.sh: warning: gh >= 2.48 required for auto-merge, found %s\n' "$version" >&2
+}
+warn_old_gh
 [ -n "${HOME:-}" ] || die "HOME is not set"
 CFG="$HOME/.config/handoff/config.env"
 cfg_get() { [ -f "$CFG" ] && /usr/bin/grep -E "^$1=" "$CFG" | tail -n 1 | cut -d= -f2- | tr -d "\"'" || true; }

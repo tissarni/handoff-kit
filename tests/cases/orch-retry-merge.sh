@@ -66,11 +66,111 @@ PY
 : >"$SANDBOX/state/gh.log"
 run_orch resume "$PLAN" --retry-merge --backend claude --publication-owner supervisor >/dev/null 2>&1
 /usr/bin/grep -q '^orchestration: done' "$PLAN" || fail "retry did not mark plan done"
-[ "$(sha256sum "$PLAN" | cut -d' ' -f1)" = "$PLAN_SUM" ] || fail "retry edited the plan"
 assert_contains "$EVENTS" 'RETRY MERGE'
 assert_contains "$EVENTS" 'MERGED ccccccc into dev — verified'
 assert_eq "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("puts",0))' "$SANDBOX/state/forge.json")" 1 "retry merge PUT count"
 assert_eq "$(final_reviews)" "$FINAL_COUNT" "final-review count changed on retry"
 [ ! -f "$(git -C "$SANDBOX/repo_under.test" rev-parse --absolute-git-dir)/handoff-plan.lock" ] || fail "checkout lock remained after retry merge"
 
+GIT_DIR="$(git -C "$SANDBOX/repo_under.test" rev-parse --absolute-git-dir)"
+CHECKOUT_LOCK="$GIT_DIR/handoff-plan.lock"
+PLAN_LOCK="${PLAN%.md}.lock"
+set_awaiting() {
+  local reviewed="$1"
+  python3 - "$PLAN" "$reviewed" <<'PY'
+import re,sys
+p,head=sys.argv[1:]; s=open(p).read(); s=re.sub(r'^orchestration:.*$', 'orchestration: awaiting-merge', s, count=1, flags=re.M)
+if re.search(r'^final-reviewed-head:', s, re.M): s=re.sub(r'^final-reviewed-head:.*$', 'final-reviewed-head: '+head, s, count=1, flags=re.M)
+else: s=s.replace('orchestration: awaiting-merge', 'orchestration: awaiting-merge\\nfinal-reviewed-head: '+head, 1)
+open(p,'w').write(s)
+PY
+  printf '%s\n' "$(readlink -f "$PLAN")" >"$CHECKOUT_LOCK"
+}
+reset_forge() {
+  python3 - "$SANDBOX/state/forge.json" "$HEAD_SHA" "$1" <<'PY'
+import json,sys
+data={'head':sys.argv[2], 'base':sys.argv[2], 'fail_check':sys.argv[3]=='fail'}
+open(sys.argv[1],'w').write(json.dumps(data))
+PY
+  : >"$SANDBOX/state/gh.log"
+}
+assert_no_forge_writes() {
+  local writes
+  writes="$(/usr/bin/grep -E '^(PUT|PATCH|DELETE)[[:space:]]' "$SANDBOX/state/gh.log" || true)"
+  [ -z "$writes" ] || fail "retry precondition caused a forge mutation: $writes"
+}
+assert_checkout_held() {
+  [ -f "$CHECKOUT_LOCK" ] || fail "checkout lock was not retained after refusal"
+  [ "$(head -1 "$CHECKOUT_LOCK")" = "$(readlink -f "$PLAN")" ] || fail "checkout lock owner changed"
+}
+
+# A moved local head requires a new final review and must not touch the forge.
+set_awaiting "$HEAD_SHA"; reset_forge ok
+printf 'head moved\n' >"$SANDBOX/repo_under.test/moved.txt"
+git -C "$SANDBOX/repo_under.test" add moved.txt
+git -C "$SANDBOX/repo_under.test" commit -q -m 'test moved head'
+: >"$SANDBOX/state/gh.log"
+if OUT="$(run_orch resume "$PLAN" --retry-merge --backend claude --publication-owner supervisor 2>&1)"; then fail "moved head retry unexpectedly succeeded"; fi
+case "$OUT" in *'head moved since the final review'*) ;; *) fail "moved head refusal was unclear: $OUT" ;; esac
+assert_checkout_held; assert_no_forge_writes
+/usr/bin/grep -q '^orchestration: awaiting-merge' "$PLAN" || fail "moved-head refusal changed plan state"
+git -C "$SANDBOX/repo_under.test" reset -q --hard "$HEAD_SHA"
+rm -f "$SANDBOX/repo_under.test/moved.txt"
+
+# Repository manual policy and an effective task hold both refuse before writes.
+set_awaiting "$HEAD_SHA"; reset_forge ok
+env -i HOME="$SANDBOX/home" PATH="$SANDBOX/bin:/usr/bin:/bin" python3 "$SANDBOX/kit/handoff-merge.py" policy-set --repo "$SANDBOX/repo_under.test" false >/dev/null
+: >"$SANDBOX/state/gh.log"
+if OUT="$(run_orch resume "$PLAN" --retry-merge --backend claude --publication-owner supervisor 2>&1)"; then fail "manual policy retry unexpectedly succeeded"; fi
+case "$OUT" in *'repository policy is not auto'*) ;; *) fail "manual repository policy refusal was unclear: $OUT" ;; esac
+assert_checkout_held; assert_no_forge_writes
+env -i HOME="$SANDBOX/home" PATH="$SANDBOX/bin:/usr/bin:/bin" python3 "$SANDBOX/kit/handoff-merge.py" policy-set --repo "$SANDBOX/repo_under.test" true >/dev/null
+env -i HOME="$SANDBOX/home" PATH="$SANDBOX/bin:/usr/bin:/bin" python3 "$SANDBOX/kit/handoff-merge.py" hold --repo "$SANDBOX/repo_under.test" --task "$(readlink -f "$PLAN")" >/dev/null
+PLAN_BEFORE="$(sha256sum "$PLAN" | cut -d' ' -f1)"
+: >"$SANDBOX/state/gh.log"
+if OUT="$(run_orch resume "$PLAN" --retry-merge --backend claude --publication-owner supervisor 2>&1)"; then fail "task hold retry unexpectedly succeeded"; fi
+case "$OUT" in *'effective task policy is manual — hold'*) ;; *) fail "task hold refusal was unclear: $OUT" ;; esac
+[ "$(sha256sum "$PLAN" | cut -d' ' -f1)" = "$PLAN_BEFORE" ] || fail "task-policy refusal edited plan"
+assert_checkout_held; assert_no_forge_writes
+env -i HOME="$SANDBOX/home" PATH="$SANDBOX/bin:/usr/bin:/bin" python3 "$SANDBOX/kit/handoff-merge.py" release --repo "$SANDBOX/repo_under.test" --task "$(readlink -f "$PLAN")" >/dev/null
+
+# A human merge is reconciled without a second merge PUT.
+set_awaiting "$HEAD_SHA"
+python3 - "$SANDBOX/state/forge.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['merged']=True; open(p,'w').write(json.dumps(d))
+PY
+: >"$SANDBOX/state/gh.log"
+run_orch resume "$PLAN" --retry-merge --backend claude --publication-owner supervisor >/dev/null 2>&1
+/usr/bin/grep -q '^orchestration: done' "$PLAN" || fail "already-merged retry did not complete"
+assert_contains "$EVENTS" 'MERGE VERIFIED'
+! /usr/bin/grep -q '^PUT ' "$SANDBOX/state/gh.log" || fail "already-merged retry sent another merge PUT"
+[ ! -f "$CHECKOUT_LOCK" ] || fail "checkout lock remained after verified human merge"
+
+# Retry-time finalize refusal must release only the plan lock and keep checkout ownership.
+set_awaiting "$HEAD_SHA"; reset_forge fail
+FINAL_COUNT="$(final_reviews)"
+: >"$SANDBOX/state/gh.log"
+run_orch resume "$PLAN" --retry-merge --backend claude --publication-owner supervisor >/dev/null 2>&1
+/usr/bin/grep -q '^orchestration: awaiting-merge' "$PLAN" || fail "retry finalize refusal did not remain awaiting-merge"
+[ ! -f "$PLAN_LOCK" ] || fail "retry finalize refusal left a plan lock"
+assert_checkout_held
+assert_eq "$(final_reviews)" "$FINAL_COUNT" "retry finalize refusal invoked final review"
+assert_eq "$(/usr/bin/grep -c '^PATCH ' "$SANDBOX/state/gh.log")" 1 "retry PR-body PATCH before finalize refusal"
+! /usr/bin/grep -q '^PUT ' "$SANDBOX/state/gh.log" || fail "refused retry attempted merge PUT"
+
+# The flag is rejected before plan or forge writes outside its supported state/command.
+PLAN_BEFORE="$(sha256sum "$PLAN" | cut -d' ' -f1)"
+if OUT="$(run_orch start "$PLAN" --retry-merge --backend claude --publication-owner supervisor 2>&1)"; then fail "start --retry-merge unexpectedly succeeded"; fi
+[ "$(sha256sum "$PLAN" | cut -d' ' -f1)" = "$PLAN_BEFORE" ] || fail "start --retry-merge edited plan"
+python3 - "$PLAN" <<'PY'
+import re,sys
+p=sys.argv[1]; s=open(p).read(); s=re.sub(r'^orchestration:.*$', 'orchestration: broken', s, count=1, flags=re.M); open(p,'w').write(s)
+PY
+PLAN_BEFORE="$(sha256sum "$PLAN" | cut -d' ' -f1)"
+: >"$SANDBOX/state/gh.log"
+if OUT="$(run_orch resume "$PLAN" --retry-merge --backend claude --publication-owner supervisor 2>&1)"; then fail "broken plan retry unexpectedly succeeded"; fi
+case "$OUT" in *'requires a plan in awaiting-merge state'*) ;; *) fail "broken-plan refusal was unclear: $OUT" ;; esac
+[ "$(sha256sum "$PLAN" | cut -d' ' -f1)" = "$PLAN_BEFORE" ] || fail "broken-plan retry edited plan"
+assert_no_forge_writes
 echo ok

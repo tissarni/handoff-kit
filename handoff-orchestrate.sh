@@ -138,7 +138,7 @@ STATUS="$BASE.status.md"; EVENTS="$BASE.events.log"; LOCK="$BASE.lock"
 BASELINE="$BASE.baseline"; STAGE_FILE="$BASE.stage"; DRIVER_LOG="$BASE.driver.log"
 TICK_FILE="$BASE.tick"
 
-BACKEND_ARG=""; MODEL_ARG=""; PUBLICATION_OWNER="runner"; PUBLICATION_OWNER_ARG=""; PUBLICATION_OWNER_SET=0; _next=""
+BACKEND_ARG=""; MODEL_ARG=""; PUBLICATION_OWNER="runner"; PUBLICATION_OWNER_ARG=""; PUBLICATION_OWNER_SET=0; RETRY_MERGE=0; _next=""
 for a in "${@:3}"; do
   case "$_next" in
     backend) BACKEND_ARG="$a"; _next=""; continue ;;
@@ -152,6 +152,7 @@ for a in "${@:3}"; do
     --backend)   _next=backend ;;
     --model)     _next=model ;;
     --publication-owner) _next=publication-owner ;;
+    --retry-merge) RETRY_MERGE=1 ;;
     --backend=*) BACKEND_ARG="${a#--backend=}" ;;
     --model=*)   MODEL_ARG="${a#--model=}" ;;
     --publication-owner=*)
@@ -162,6 +163,7 @@ for a in "${@:3}"; do
   esac
 done
 [ -z "$_next" ] || die "--$_next needs a value"
+[ "$RETRY_MERGE" -eq 0 ] || [ "$CMD" = resume ] || die "--retry-merge only applies to resume"
 if [ "$PUBLICATION_OWNER_SET" -eq 1 ]; then PUBLICATION_OWNER="$PUBLICATION_OWNER_ARG"; fi
 case "$CMD" in start|resume|__driver) ;; *)
   [ "$PUBLICATION_OWNER_SET" -eq 0 ] || die "--publication-owner only applies to start or resume" ;;
@@ -464,13 +466,7 @@ resume_awaiting_merge() {
         printf 'still awaiting merge into %s: reviewed head %s does not match PR head %s\n' "$BASE_BRANCH" "${reviewed:0:7}" "${second:0:7}" >&2
         exit 1
       fi
-      log_event "MERGE VERIFIED ${first:0:7} into $BASE_BRANCH"
-      release_checkout_lock
-      set_plan_orch done
-      write_status "DONE · merge ${first:0:7} verified into $BASE_BRANCH · $(ts "$(now_s)")" "$(phase_summary)"
-      retire_watchdog
-      notify "DONE · merge ${first:0:7} verified into $BASE_BRANCH"
-      echo "merge verified: ${first:0:7} into $BASE_BRANCH"
+      complete_verified_merge "$first"
       ;;
     open)
       printf 'still awaiting merge into %s: PR #%s remains open (%s)\n' "$BASE_BRANCH" "$first" "${second:0:7}" >&2
@@ -485,6 +481,62 @@ resume_awaiting_merge() {
       exit 1
       ;;
   esac
+}
+complete_verified_merge() {  # $1 = verified merge commit
+  local merge_sha="$1"
+  log_event "MERGE VERIFIED ${merge_sha:0:7} into $BASE_BRANCH"
+  release_checkout_lock
+  set_plan_orch done
+  write_status "DONE · merge ${merge_sha:0:7} verified into $BASE_BRANCH · $(ts "$(now_s)")" "$(phase_summary)"
+  retire_watchdog
+  notify "DONE · merge ${merge_sha:0:7} into $BASE_BRANCH"
+  echo "merge verified: ${merge_sha:0:7} into $BASE_BRANCH"
+}
+
+retry_awaiting_merge() {
+  local slug reviewed helper out kind first second effective task local_head clf self
+  slug="$(github_repo_slug)" || die "still awaiting merge into $BASE_BRANCH: merge verification requires a GitHub origin URL"
+  reviewed="$(fm_scalar "$PLAN" final-reviewed-head)"
+  [[ "$reviewed" =~ ^[0-9a-fA-F]{40}$ ]] || die "still awaiting merge into $BASE_BRANCH: plan has no valid final-reviewed-head"
+  helper="${HANDOFF_SCRIPTS_DIR:-$KIT}/handoff-merge.py"
+
+  # A completed human merge wins over every retry precondition; never finalize it twice.
+  out="$(python3 "$helper" merge-state --repository "$slug" --branch "$WANT_BRANCH" --base "$BASE_BRANCH" 2>&1)" || die "still awaiting merge into $BASE_BRANCH: ${out##*$'\n'}"
+  read -r kind first second <<<"$out"
+  if [ "$kind" = merged ]; then
+    [ "$second" = "$reviewed" ] || die "still awaiting merge into $BASE_BRANCH: reviewed head ${reviewed:0:7} does not match PR head ${second:0:7}"
+    complete_verified_merge "$first"
+    return 0
+  fi
+  [ "$kind" = open ] || die "still awaiting merge into $BASE_BRANCH: no matching open PR was found"
+
+  [ "$(python3 "$helper" policy-get --repo "$REPO" 2>/dev/null || true)" = auto ] || die "still awaiting merge into $BASE_BRANCH: repository policy is not auto"
+  effective="manual — policy decision unavailable"
+  task="$(readlink -f "$PLAN")"
+  if [ -n "$PLAN_REVISION" ]; then
+    effective="$(python3 "$helper" effective --repo "$REPO" --task "$task" --revision "$PLAN_REVISION" 2>/dev/null || true)"
+  fi
+  [ "$effective" = auto ] || die "still awaiting merge into $BASE_BRANCH: effective task policy is $effective"
+  [ "$BASE_BRANCH" = dev ] || die "still awaiting merge into $BASE_BRANCH: auto-merge only targets dev; base is $BASE_BRANCH"
+  [ "$(repo_forge)" = github ] && [ -n "$slug" ] || die "still awaiting merge into $BASE_BRANCH: forge is not GitHub"
+  [ -n "${GH_TOKEN:-}" ] && [ -n "${GH_HOST:-}" ] || die "still awaiting merge into $BASE_BRANCH: GH_TOKEN and GH_HOST are required"
+  local_head="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
+  [ "$local_head" = "$reviewed" ] || die "still awaiting merge into $BASE_BRANCH: head moved since the final review; reset to broken and resume to re-review"
+  [ "$second" = "$reviewed" ] || die "still awaiting merge into $BASE_BRANCH: PR head does not match the final-reviewed head"
+
+  lock_alive && die "still awaiting merge into $BASE_BRANCH: plan already has a live driver: $(cat "$LOCK")"
+  clf="$(checkout_lock_path)" || die "still awaiting merge into $BASE_BRANCH: checkout lock path unavailable"
+  self="$(readlink -f "$PLAN")"
+  if [ -f "$clf" ] && [ "$(head -1 "$clf")" != "$self" ]; then
+    die "still awaiting merge into $BASE_BRANCH: checkout is held by $(head -1 "$clf")"
+  fi
+  write_lock "$$"
+  trap 'release_lock' EXIT
+  if [ ! -f "$clf" ]; then printf '%s\n' "$self" >"$clf.tmp.$$" && mv -f "$clf.tmp.$$" "$clf"; fi
+  log_event "RETRY MERGE ${reviewed:0:7}"
+  auto_merge_tail "$helper" "$reviewed"
+  release_lock
+  trap - EXIT
 }
 set_phase_status() {  # $1 = pending|running|done|broken, on phases[PLAN_PHASE_IDX]
   python3 - "$PLAN" "$PLAN_PHASE_IDX" "$1" <<'PY'
@@ -1666,6 +1718,12 @@ ensure_branch() {
 }
 
 begin() {  # $1 = START|RESUME
+  if [ "$RETRY_MERGE" -eq 1 ]; then
+    [ "$1" = RESUME ] || die "--retry-merge only applies to resume"
+    [ "$PLAN_ORCH" = awaiting-merge ] || die "--retry-merge requires a plan in awaiting-merge state"
+    retry_awaiting_merge
+    return 0
+  fi
   if [ "$PLAN_ORCH" = awaiting-merge ]; then
     [ "$1" = RESUME ] || die "plan is awaiting merge; use resume to verify the merge"
     resume_awaiting_merge
